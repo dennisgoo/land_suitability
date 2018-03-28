@@ -32,12 +32,14 @@ def DataTypeConversion(x):
             'Integer': gdal.GDT_Int32,
         }.get(x, gdal.GDT_Unknown)
     
+
 def DataTypeConversion_GDAL2NP(x):
     return {
             5: np.int,
             6: np.float,
         }.get(x, np.float)
     
+
 def ReadRaster(inRaster, band, dataType):
     
     source = gdal.Open(inRaster)
@@ -45,6 +47,7 @@ def ReadRaster(inRaster, band, dataType):
     valArray = band.ReadAsArray().astype(dataType)
     
     return valArray
+
 
 def Array2Raster(inArray, refRaster, newRaster):
     
@@ -76,6 +79,7 @@ def Array2Raster(inArray, refRaster, newRaster):
     outRaster.SetProjection(outRasterSRS.ExportToWkt())
     outband.FlushCache()
     
+
 def DetermineValueOrder(values):
     
     if len(values) > 1:
@@ -95,6 +99,7 @@ def DetermineValueOrder(values):
     else:
         return None
 
+
 def ExtractMaxValueOfStack(array_list):
     
     suit_array_stack = np.dstack(array_list)
@@ -113,11 +118,12 @@ def ExtractMaxValueOfStack(array_list):
     
     return maxValue
 
+
 def homogenize_nodata_area(array_list, NoData):
     '''
-        This function is used to make create a mask array, 
-        and its' Nodata grids match all the Nodata grids in 
-        each array in the array list. 
+    This function is used to make create a mask array, 
+    and its' Nodata grids match all the Nodata grids in 
+    each array in the array list. 
     '''
     for i in range(0, len(array_list)):
         if i == 1:
@@ -128,80 +134,67 @@ def homogenize_nodata_area(array_list, NoData):
     ref_array = np.where(exp, array_list[0], NoData)
     return ref_array
 
+
 def strip_end(text, suffix):
     if not text.endswith(suffix):
         return text
     return text[:len(text)-len(suffix)]
 
 
-if __name__ == '__main__':
+def suitability_mapping(df_config, df_crop, coviriate_raster_list):
+    '''
+    Core function of suitability mapping.
+    'df_config' - panda dataframe of 'config.csv' file
+    'df_crop' - panda dataframe of 'crop.csv' file
+    'coviriate_raster_list' - a list of all the coviriate layers (directory plus filename)
+    '''
     
-    config_path = r'D:\LandSuitability_AG\data\config'
-    output_path = r'D:\LandSuitability_AG\output' 
-    data_path = join(output_path, 'original_property')
-    
-    if not os.path.exists(data_path):
-        sys.exit('The directory of cofiguration files "{}" does not exist.'.format(data_path))
-    
-    outSubRoot = join(output_path, 'suitability_maps')
-    if not os.path.exists(outSubRoot):
-        os.makedirs(outSubRoot, exist_ok = True)
-    
-    # Define NoData value of new raster
-    NoData_value = -9999
-
-    
-    config_file = join(config_path, 'config.csv')
-    crop_file = join(config_path, 'crops.csv')
-    
-    df_config = pd.read_csv(config_file, thousands=',')
-    df_crop = pd.read_csv(crop_file, thousands=',')
-    
-    data_attr = list(df_config['Data_attr'].dropna().unique())
-    
+    # get a crop list   
     crops = list(df_crop['Crops'].dropna().unique())
-    
-    p_rasters = []
-    for (root, subroot, filenames) in walk(data_path):
-        for f in filenames:
-            if f.split('.')[-1].lower() in ['tif', 'tiff']:
-                p_rasters.append(join(root, f))
-
-        break
-    
-    
-    def suitability_mapping(df_config, df_crop, coviriate_raster_list):
-        
-        
    
     # Create suitability rasters of each properties of each crops
     # iterate each crop
     for c in crops:
-        subdf_crop = df_crop[df_crop['Crops']==c]
-        suit_level = list(subdf_crop['Suitability'])
+        subdf_crop = df_crop[df_crop['Crops']==c]    # dataframe of one crop - c
+        suit_level = list(subdf_crop['Suitability']) # the suitability level of crop c
         
-        crop_folder = join(outSubRoot, c)
+        crop_folder = join(outSubRoot, c)            # output folder of suitability maps of crop c
         os.makedirs(crop_folder, exist_ok = True)
         
+        # climatic layer can be in a time series, and when calculate the overall suitability, they should be seperated,
+        # so here use two lists to distinguish climatic and non-climatic layers
         non_climatic_arrays = []
         climatic_arrays = []
-        years = []
+        years = []   # a list of years of the climatic layers
         
-        # iterate each property
-        for r in p_rasters:
-            property_array = ReadRaster(r, 1, np.float)
-            suit_array = np.zeros(property_array.shape)
-            d_a = r.split('\\')[-1].split('.')[0] # data field name
-            suit_raster_file = join(crop_folder, 'suit_{}.tif'.format(d_a))
+        # iterate each coviriate layer
+        for r in coviriate_raster_list:
+            property_array = ReadRaster(r, 1, np.float)  # an array of the coviriate
+            suit_array = np.zeros(property_array.shape)  # an empty array for suitability array (fill with value afterwards)
+            d_a = r.split('\\')[-1].split('.')[0]        # data attribute name, consistent with the  "Data_attr" value in config.csv
+                                                         # this velue is extracted from the filename of coviriate raster. 
+                                                         # When these rasters were created in the 'covireate_preprocessing.py' script, 
+                                                         # their name were set based on the "Data_attr" values.   
+            suit_raster_file = join(crop_folder, 'suit_{}.tif'.format(d_a)) # raster filename of suitability map of crop c
 
-            if 'annual' in d_a:
+            # When dealing with the climatic rasters the 'year' number need to be eliminated,
+            # to keep the consistency of the "Data_attr" values in config.csv.
+            # 'annual' here is the key word to determine wether the coviriate raster is climatic or not,
+            # and this is based on the coviriate rasters's filename. 
+            # BE CAUTION!!! If the filename were changed,
+            # e.g. when monthly raster are created, this key words will not work, it should be changed to 'monthly'
+            # or whatever that can differenciate the climatic raster from the others.
+            if 'annual' in d_a                           
                 years.append(d_a.split('_')[-1])
                 d_a = strip_end(d_a, d_a.split('_')[-1])
                                 
             
-            subdf_conf = df_config[df_config['Data_attr'] == d_a]
-            crop_a = subdf_conf['Crop_attr']
+            subdf_conf = df_config[df_config['Data_attr'] == d_a] # a sub-dataframe of config file dataframe which only has records of coviriate 'd_a'
+            crop_a = subdf_conf['Crop_attr']                      # extract the crop attributes 
             
+            # the number of crop attribute is used to determine the type of coviriate, either continual or catorgrical,
+            # as well as to determine, when it is a continual coviriate, wether it is a one direction criterion (either ascending or descending) 
+            # or a two directions criterion (both ascending and descending). 
             if len(crop_a) == 1:
                 crop_attr_value = list(subdf_crop[crop_a.item()])
                 order = DetermineValueOrder(crop_attr_value)
@@ -309,6 +302,43 @@ if __name__ == '__main__':
             crop_suit_raster_file = join(crop_folder, '{}_suitability_{}.tif'.format(c, years[i]))
             Array2Raster(crop_suit_array, suit_raster_file, crop_suit_raster_file)
             i += 1
+
+if __name__ == '__main__':
+    
+    config_path = r'D:\LandSuitability_AG\data\config'     # the path of the two configration files
+    output_path = r'D:\LandSuitability_AG\output'          # the path of output rasters 
+    data_path = join(output_path, 'original_property')     # the path of coviriate layers 
+    
+    if not os.path.exists(data_path):
+        sys.exit('The directory of cofiguration files "{}" does not exist.'.format(data_path))
+    
+    # create a directory for suitability maps
+    outSubRoot = join(output_path, 'suitability_maps1')
+    if not os.path.exists(outSubRoot):
+        os.makedirs(outSubRoot, exist_ok = True)
+    
+    # Set NoData value of new raster
+    NoData_value = -9999
+
+    
+    config_file = join(config_path, 'config.csv')
+    crop_file = join(config_path, 'crops.csv')
+    
+    df_config = pd.read_csv(config_file, thousands=',')
+    df_crop = pd.read_csv(crop_file, thousands=',')
+    
+    
+    # get all the coviriate tif layers
+    p_rasters = []
+    for (root, subroot, filenames) in walk(data_path):
+        for f in filenames:
+            if f.split('.')[-1].lower() in ['tif', 'tiff']:
+                p_rasters.append(join(root, f))
+
+        break
+    
+    
+    suitability_mapping(df_config, df_crop, p_rasters)
         
         
         
