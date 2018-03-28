@@ -4,8 +4,8 @@ Created on Thu Mar 22 10:10:09 2018
 
 @author: guoj
 
-This script is for SLMACC project. It homogenizes all the covariate layers,
-including resolution, extend and projection.
+This script is for SLMACC project. It is the second step of land suitability mapping.
+It homogenizes, including resolution, extend and projection, all the covariate layers.
 
 """
 
@@ -14,14 +14,83 @@ import os
 from os.path import join
 import pandas as pd
 import shutil
+from shutil import copyfile
 import datetime as dt
 import numpy as np
 import sys
+from os import walk
+
+
+def ReprojectRaster2(raster_file, ref_raster_file, target_raster_file):
+    
+    raster = gdal.Open(raster_file) 
+    band = raster.GetRasterBand(1)
+    raster_array = band.ReadAsArray().astype(np.float)
+    
+    Array2Raster(raster_array, ref_raster_file, target_raster_file)
+    
+
+def reproject_raster2(dataset, refdataset, outrst):
+
+    g = gdal.Open(dataset)
+    ref = gdal.Open(refdataset)
+    
+    # Define spatialreference
+    wgs84 = osr.SpatialReference()
+    wgs84.ImportFromWkt(g.GetProjectionRef())
+
+    nz2000 = osr.SpatialReference()
+    nz2000.ImportFromWkt(ref.GetProjectionRef())
+
+    #Transformation function
+#    tx = osr.CoordinateTransformation(wgs84,nz2000)
+    
+    # Get the Geotransform vector
+    geo_t = g.GetGeoTransform ()
+    cols = g.RasterXSize # Raster xsize
+    rows = g.RasterYSize # Raster ysize
+    # Work out the boundaries of the new dataset in the target projection
+#    (ulx, uly, ulz) = tx.TransformPoint(geo_t[0], geo_t[3])
+#    (lrx, lry, lrz) = tx.TransformPoint(geo_t[0] + geo_t[1]*cols, geo_t[3] + geo_t[5]*rows)
+    
+    ulx = 992526.553934
+    uly = 6199013.57078
+    lrx = 2112456.44911
+    lry = 4732923.52618
+    
+    pixelsizeX = (lrx - ulx)/cols
+    pixelsizeY = (lry - uly)/rows
+
+    # See how using 27700 and WGS84 introduces a z-value!
+    # Now, we create an in-memory raster
+    mem_drv = gdal.GetDriverByName('GTiff')
+    # The size of the raster is given the new projection and pixel spacing
+    # Using the values we calculated above. Also, setting it to store one band
+    # and to use Float32 data type.
+    dest = mem_drv.Create(outrst, cols, rows, 1, gdal.GDT_Float32)
+    # Calculate the new geotransform
+    new_geo = (ulx, pixelsizeX, geo_t[2], uly, geo_t[4], pixelsizeY)
+
+    # Set the geotransform
+    dest.SetGeoTransform(new_geo)
+    dest.SetProjection(nz2000.ExportToWkt())
+    
+    #set No data value
+    outband = dest.GetRasterBand(1)
+    outband.SetNoDataValue(-9999)
+    # Perform the projection/resampling 
+    gdal.ReprojectImage(g, dest, wgs84.ExportToWkt(), nz2000.ExportToWkt(), gdal.GRA_NearestNeighbour)
 
 def reproject_raster(dataset, refdataset, outrst):
     """
     A function to reproject and resample a GDAL dataset from within 
     Python. 
+    
+    For some raster, this function has some unexpected issues on 'TransformPoint',
+    which result in the incorrect extent of projected raster.
+    
+    An alternative way is to use 'reproject_raster2' function
+    which set fixed values of target raster.(Can create from ArcGIS)
     """
 
     g = gdal.Open(dataset)
@@ -301,6 +370,7 @@ if __name__ == '__main__':
     if not os.path.exists(output_path):
         os.makedirs(output_path, exist_ok = True)
     
+    climate_reference_raster = join(prj_path, 'data\climate\sr_nz200_ref', 'climate_nz2000.tif')
     # Define NoData value of new raster
     NoData_value = -9999
     # Define resolution of output raster
@@ -342,11 +412,49 @@ if __name__ == '__main__':
             r_types.append(data_t)
 
         elif data_type == 'raster':
-            outrst = join(individual_property_raster_path, '{}.tif'.format(d_a))
-            refrst = p_rasters[0]
-            reproject_raster(join(data_path, data_layer), refrst, outrst)    
-            resample_image_Nearest(outrst, refrst)
-            p_rasters.append(outrst)
-            r_types.append(6)
+            # If the raster data layer name ends with '_' 
+            # indicates this is a climate layer which has a time series of data to deal with.
+            if data_layer.split('.')[0][-1] == '_':
+                files = []
+                for (root, subroot, filenames) in walk(data_path):
+                    files.extend(filenames)
+                
+                for f in files:
+                    if data_layer.split('.')[0] in f:
+                        outrst = join(individual_property_raster_path, f)
+                        if not p_rasters[0]:
+                            refrst = join(data_path, f)
+                        else:
+                            refrst = p_rasters[0]
+#                        ReprojectRaster2(join(data_path, f), climate_reference_raster, outrst)
+                        reproject_raster2(join(data_path, f), refrst, outrst)
+#                        copyfile(join(data_path, f), outrst)
+                        p_rasters.append(outrst)
+                        r_types.append(6)
+                        
+            else: # Otherwise just one raster to deal with.
+                outrst = join(individual_property_raster_path, '{}.tif'.format(d_a))
+                if not p_rasters[0]:
+                    refrst = join(data_path, data_layer)
+                else:
+                    refrst = p_rasters[0]
+                reproject_raster(join(data_path, data_layer), refrst, outrst)
+#                copyfile(join(data_path, data_layer), outrst)
+                p_rasters.append(outrst)
+                r_types.append(6)
 
-        print('{} has been created!'.format(d_a))    
+        print('{} has been created!'.format(d_a)) 
+    
+    # Resample rasters to make sure they are consistent with the first created raster in resolution and extent.    
+    print('Start to resample raster files...')
+    
+    i = 0
+    for r in p_rasters:
+        if i > 0:
+
+            resample_image_Nearest(r, p_rasters[0])
+    
+        i+=1
+        
+        
+        
