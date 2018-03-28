@@ -83,6 +83,9 @@ def Array2Raster(inArray, refRaster, newRaster):
 def DetermineValueOrder(values):
     
     if len(values) > 1:
+        # the -9999 is a end mark of descending attribution while the -9990 is an ascending attribute end mark
+        # these marks are set in 'crop.csv' file in case there is just one vaule in any continual attribute,
+        # to help the script konw the order of the attribute
         if values[1] not in [-9999, -9990]:
             diff = values[1] - values[0]
             if diff > 0:
@@ -192,18 +195,20 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
             subdf_conf = df_config[df_config['Data_attr'] == d_a] # a sub-dataframe of config file dataframe which only has records of coviriate 'd_a'
             crop_a = subdf_conf['Crop_attr']                      # extract the crop attributes 
             
-            # the number of crop attribute is used to determine the type of coviriate, either continual or catorgrical,
+            # the number of crop attribute is used to determine the type of coviriate, either continual or categorical,
             # as well as to determine, when it is a continual coviriate, wether it is a one direction criterion (either ascending or descending) 
             # or a two directions criterion (both ascending and descending). 
             if len(crop_a) == 1:
                 crop_attr_value = list(subdf_crop[crop_a.item()])
-                order = DetermineValueOrder(crop_attr_value)
+                order = DetermineValueOrder(crop_attr_value)   # DetermineValueOrder function is used to check whether the current crop attribute is ascending or descending
                 
                 if order is not None:
                               
-                    for i in range(0, len(suit_level)):
+                    for i in range(0, len(suit_level)):   # iterate through each suitability level to project the coviriate values
+                        # extract the criterion of crop attribution value of corresponding to each suitability level
                         value = subdf_crop[subdf_crop['Suitability'] == suit_level[i]].iloc[0][crop_a.item()]
                         if order == 'ascending':
+                            # below are the logical rule of projecting crop attribution value to suitability level
                             if i == 0: 
                                 suit_array = np.where(property_array<=value, suit_level[i], suit_array)
                             else:
@@ -224,8 +229,10 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
                                 else:
                                     suit_array = np.where(property_array<value0, suit_level[i], suit_array)
                                     break
-            
-            elif len(crop_a) == 2:
+            # the situation of both ascending and descending attribututes exist (Only for the continual attributes)
+            # BE CAUTION!!! If it is a categorical coviriate and has only two crop attributes then the below script cannot deal with it
+            # Currently assume the categorical coviriate must have 3 or more crop attributes
+            elif len(crop_a) == 2:   
                 value = [None] * 2
                 order = [None] * 2
                 value0 = [None] * 2
@@ -236,6 +243,7 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
                     
                 if (order[0] is not None) and (order[1] is not None):
                     
+                    # switch the order if necessary to make sure the fisrt crop attribute is always ascending 
                     if (order[0] == 'ascending') and (order[1] == 'descending'):
                         pass
                     elif (order[0] == 'descending') and (order[1] == 'ascending'):          
@@ -243,17 +251,22 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
                         crop_a.iloc[0] = crop_a.iloc[1]
                         crop_a.iloc[1] = tmp
                         tmp = None
-                        
+                    
+                    # iterate through each suitability level    
                     for i in range(0, len(suit_level)):
+                        # value[0] is for the ascending attribute while value[1] is for the descending attribute 
                         value[0] = subdf_crop[subdf_crop['Suitability'] == suit_level[i]].iloc[0][crop_a.iloc[0]]
                         value[1] = subdf_crop[subdf_crop['Suitability'] == suit_level[i]].iloc[0][crop_a.iloc[1]]
                         
+                        # below are the logical rule of projecting crop attribution value to suitability level
                         if i == 0: 
                             if value[0] < value[1]:
                                 print('Irrational values occur in {} or in {}. \nCannot generate suitability map of "{}".'.format(crop_a.iloc[0], crop_a.iloc[1], d_a))
                                 break
                             suit_array = np.where(np.logical_and(property_array<=value[0], property_array>value[1]), suit_level[i], suit_array)
                         else:
+                            # value0[0] is for the previous ascending attribute 
+                            # value0[1] is for the previous descending attribute 
                             value0[0] = subdf_crop[subdf_crop['Suitability'] == suit_level[i-1]].iloc[0][crop_a.iloc[0]]
                             value0[1] = subdf_crop[subdf_crop['Suitability'] == suit_level[i-1]].iloc[0][crop_a.iloc[1]]
                             if ((np.isnan(value[0]) == False) and (value[0] != -9990)) and ((np.isnan(value[1]) == False) and (value[1] != -9999)):
@@ -270,7 +283,8 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
                                 elif ((np.isnan(value0[0]) == False) and (value0[0] != -9990)) and ((np.isnan(value0[1]) == False) and (value0[1] != -9999)):
                                     suit_array = np.where(np.logical_or(property_array>value0[0], property_array<=value0[1]), suit_level[i], suit_array)
 #                                break
-                    
+            # deal with the categorical coviriates
+            # Again!!! assume categorical coviriates have 3 or more crop attributes (caterogries)
             elif len(crop_a) > 2:
                 for j in range(0, len(crop_a)):    
                         
@@ -281,21 +295,23 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
                             break
             
             suit_array[np.where(property_array == NoData_value)] = NoData_value
-            Array2Raster(suit_array, r, suit_raster_file)            
-        
-            if 'annual' in d_a:
+            Array2Raster(suit_array, r, suit_raster_file)      # export the suitability map of each coviriate      
+            
+            # differenciate the climatic and non-climatic coviriate array
+            if 'annual' in d_a: 
                 climatic_arrays.append(suit_array)
             else:
                 non_climatic_arrays.append(suit_array)
         
-        to_be_stacked_arrays = []
+        to_be_stacked_arrays = []   # the array list used to calculate the overall suitability
         i = 0
-        for sa in climatic_arrays:
+        for sa in climatic_arrays:    # iterate through each climate array and combine it to the non-climatic list
 
             to_be_stacked_arrays = []
             to_be_stacked_arrays.extend(non_climatic_arrays)
             to_be_stacked_arrays.append(sa)
-    
+            
+            # the overall suitability array based on the maximum value of array list
             crop_suit_array = ExtractMaxValueOfStack(to_be_stacked_arrays)
             ref_array = homogenize_nodata_area(to_be_stacked_arrays, NoData_value)
             crop_suit_array[np.where(ref_array == NoData_value)] = NoData_value
