@@ -2,7 +2,7 @@
 """
 Created on Fri Mar 16 11:31:27 2018
 
-This script is for SLMACC project. It creates climatic covariates for land suitability modelling based on ERA daily climate data.
+This script is for SLMACC project. It creates climatic covariates (annual & monthly mean temperature) for land suitability modelling based on ERA daily climate data.
 
 @author: J. Guo
 """
