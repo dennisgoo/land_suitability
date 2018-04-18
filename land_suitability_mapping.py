@@ -24,7 +24,8 @@ import pandas as pd
 import numpy as np
 import sys
 from os import walk
-
+import CSVOperation
+import datetime as dt
 
 def DataTypeConversion(x):
     return {
@@ -86,19 +87,19 @@ def DetermineValueOrder(values):
         # the -9999 is a end mark of descending attribution while the -9990 is an ascending attribute end mark
         # these marks are set in 'crop.csv' file in case there is just one vaule in any continual attribute,
         # to help the script konw the order of the attribute
-        if values[1] not in [-9999, -9990]:
-            diff = values[1] - values[0]
+        
+        for v in values:
+            if v == -9999:
+                return 'descending'
+            elif v == -9990:
+                return 'ascending'
+
+        for i in range(0, len(values)-1):
+            diff = values[i+1] - values[i]
             if diff > 0:
                 return 'ascending'
             elif diff < 0:
                 return 'descending'
-            else:
-                return None
-        else:
-            if values[1] == -9999:
-                return 'descending'
-            else:
-                return 'ascending'
     else:
         return None
 
@@ -116,15 +117,59 @@ def ExtractMaxValueOfStack(array_list):
     
     # Index out the maximum and minimum values from the stacked array based on row 
     # and column position and the maximum value
-    maxValue = suit_array_stack[row, col, maxIndex]
+    maxValue_array = suit_array_stack[row, col, maxIndex]
 #    minValue = suit_array_stack[row, col, minIndex]
     
-    return maxValue
+    return maxValue_array
+
+def ExtractMaxValueIndexBinaryOfStack(array_list, name_list, max_value):
+    
+    def getNameGroup(binary_string, name_list):
+        
+        binary_string = binary_string[2:] # Remove the first two charactors '0b'
+        
+        name_group = []
+        
+        for i in range(0, len(binary_string)):
+            if binary_string[i] == '1':
+                name_group.append(name_list[i])
+        
+        return name_group
+
+    
+    max_index_binary_array = '0b'
+    max_count_array = np.zeros(array_list[0].shape)
+    
+    for array in array_list:
+        max_index_array = np.where(array == max_value, '1', '0')
+        max_index_binary_array = np.core.defchararray.add(max_index_binary_array, max_index_array)
+        
+        max_array = np.where(array == max_value, 1, 0)
+        max_count_array = max_count_array + max_array
+        
+        
+    max_index_int_array = np.zeros(max_index_binary_array.shape)
+    for i in range(0, len(max_index_binary_array)):
+        for j in range(0, len(max_index_binary_array[i])):
+            max_index_int_array[i][j] = int(max_index_binary_array[i][j], 2)
+    
+    
+    unique_binary_list = list(np.unique(max_index_binary_array))
+    
+    max_value_legend_list = []
+    
+    for binary in unique_binary_list:
+        
+        key = int(binary, 2)
+        group_name = getNameGroup(binary, name_list)
+        max_value_legend_list.append([key, len(group_name), '&'.join(group_name)])
+        
+    return max_index_int_array, max_count_array, max_value_legend_list
 
 
 def homogenize_nodata_area(array_list, NoData):
     '''
-    This function is used to make create a mask array, 
+    This function is used to create a mask array, 
     and its' Nodata grids match all the Nodata grids in 
     each array in the array list. 
     '''
@@ -158,6 +203,7 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
     # Create suitability rasters of each properties of each crops
     # iterate each crop
     for c in crops:
+        print('create {} suitability raster at {}...'.format(c, dt.datetime.now()))
         subdf_crop = df_crop[df_crop['Crops']==c]    # dataframe of one crop - c
         suit_level = list(subdf_crop['Suitability']) # the suitability level of crop c
         
@@ -166,19 +212,21 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
         
         # climatic layer can be in a time series, and when calculate the overall suitability, they should be seperated,
         # so here use two lists to distinguish climatic and non-climatic layers
-        non_climatic_arrays = []
-        climatic_arrays = []
-        years = []   # a list of years of the climatic layers
         
+        suit_arrays = []
+#        non_climatic_arrays = []
+#        climatic_arrays = []
+        years = []   # a list of years of the climatic layers
+        covariate_list = [] # a list of covariates name
         # iterate each coviriate layer
         for r in coviriate_raster_list:
             property_array = ReadRaster(r, 1, np.float)  # an array of the coviriate
             suit_array = np.zeros(property_array.shape)  # an empty array for suitability array (fill with value afterwards)
             d_a = r.split('\\')[-1].split('.')[0]        # data attribute name, consistent with the  "Data_attr" value in config.csv
-                                                         # this velue is extracted from the filename of coviriate raster. 
+            covariate_list.append(d_a)                   # this velue is extracted from the filename of coviriate raster. 
                                                          # When these rasters were created in the 'covireate_preprocessing.py' script, 
                                                          # their name were set based on the "Data_attr" values.   
-            suit_raster_file = join(crop_folder, 'suit_{}.tif'.format(d_a)) # raster filename of suitability map of crop c
+            suit_raster_file = join(crop_folder, '{}_suit_{}.tif'.format(c, d_a)) # raster filename of suitability map of crop c
 
             # When dealing with the climatic rasters the 'year' number need to be eliminated,
             # to keep the consistency of the "Data_attr" values in config.csv.
@@ -187,7 +235,7 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
             # BE CAUTION!!! If the filename were changed,
             # e.g. when monthly raster are created, this key words will not work, it should be changed to 'monthly'
             # or whatever that can differenciate the climatic raster from the others.
-            if 'annual' in d_a                           
+            if 'annual' in d_a:                           
                 years.append(d_a.split('_')[-1])
                 d_a = strip_end(d_a, d_a.split('_')[-1])
                                 
@@ -272,9 +320,15 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
                             if ((np.isnan(value[0]) == False) and (value[0] != -9990)) and ((np.isnan(value[1]) == False) and (value[1] != -9999)):
                                 suit_array = np.where(np.logical_or(np.logical_and(property_array>value0[0], property_array<=value[0]), np.logical_and(property_array<=value0[1], property_array>value[1])), suit_level[i], suit_array)
                             elif ((np.isnan(value[0]) == True) or (value[0] == -9990)) and ((np.isnan(value[1]) == False) and (value[1] != -9999)):
-                                suit_array = np.where(np.logical_or(property_array>value0[0], np.logical_and(property_array<=value0[1], property_array>value[1])), suit_level[i], suit_array)                  
+                                suit_array = np.where(np.logical_and(property_array<=value0[1], property_array>value[1]), suit_level[i], suit_array)                       
+                                if (np.isnan(value0[0]) == False) and (value0[0] != -9990):
+                                    suit_array = np.where(property_array>value0[0], suit_level[i], suit_array)
+                            
                             elif ((np.isnan(value[0]) == False) and (value[0] != -9990)) and ((np.isnan(value[1]) == True) or (value[1] == -9999)):
-                                suit_array = np.where(np.logical_or(np.logical_and(property_array>value0[0], property_array<=value[0]), property_array<=value0[1]), suit_level[i], suit_array)                                
+                                suit_array = np.where(np.logical_and(property_array>value0[0], property_array<=value[0]), suit_level[i], suit_array)
+                                if (np.isnan(value0[1]) == False) and (value0[1] != -9999):
+                                    suit_array = np.where(property_array<=value0[1], suit_level[i], suit_array)
+                                
                             else:
                                 if ((np.isnan(value0[0]) == True) or (value0[0] == -9990)) and ((np.isnan(value0[1]) == False) and (value0[1] != -9999)):
                                     suit_array = np.where(property_array<=value0[1], suit_level[i], suit_array)
@@ -282,7 +336,7 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
                                     suit_array = np.where(property_array>value0[0], suit_level[i], suit_array)
                                 elif ((np.isnan(value0[0]) == False) and (value0[0] != -9990)) and ((np.isnan(value0[1]) == False) and (value0[1] != -9999)):
                                     suit_array = np.where(np.logical_or(property_array>value0[0], property_array<=value0[1]), suit_level[i], suit_array)
-#                                break
+
             # deal with the categorical coviriates
             # Again!!! assume categorical coviriates have 3 or more crop attributes (caterogries)
             elif len(crop_a) > 2:
@@ -296,28 +350,55 @@ def suitability_mapping(df_config, df_crop, coviriate_raster_list):
             
             suit_array[np.where(property_array == NoData_value)] = NoData_value
             Array2Raster(suit_array, r, suit_raster_file)      # export the suitability map of each coviriate      
-            
-            # differenciate the climatic and non-climatic coviriate array
-            if 'annual' in d_a: 
-                climatic_arrays.append(suit_array)
-            else:
-                non_climatic_arrays.append(suit_array)
-        
-        to_be_stacked_arrays = []   # the array list used to calculate the overall suitability
-        i = 0
-        for sa in climatic_arrays:    # iterate through each climate array and combine it to the non-climatic list
 
-            to_be_stacked_arrays = []
-            to_be_stacked_arrays.extend(non_climatic_arrays)
-            to_be_stacked_arrays.append(sa)
-            
-            # the overall suitability array based on the maximum value of array list
-            crop_suit_array = ExtractMaxValueOfStack(to_be_stacked_arrays)
-            ref_array = homogenize_nodata_area(to_be_stacked_arrays, NoData_value)
-            crop_suit_array[np.where(ref_array == NoData_value)] = NoData_value
-            crop_suit_raster_file = join(crop_folder, '{}_suitability_{}.tif'.format(c, years[i]))
-            Array2Raster(crop_suit_array, suit_raster_file, crop_suit_raster_file)
-            i += 1
+            suit_arrays.append(suit_array)
+        
+        crop_suit_array = ExtractMaxValueOfStack(suit_arrays)
+        ref_array = homogenize_nodata_area(suit_arrays, NoData_value)
+        crop_suit_array[np.where(ref_array == NoData_value)] = NoData_value
+        crop_suit_raster_file = join(crop_folder, '{}_suitability.tif'.format(c))
+        Array2Raster(crop_suit_array, suit_raster_file, crop_suit_raster_file)
+        
+        print('create dominant worst covariate raster at {}...'.format(dt.datetime.now()))
+        worst_dominant_array, worst_count_array, worst_dominant_legend_list = ExtractMaxValueIndexBinaryOfStack(suit_arrays, covariate_list, 4)
+        
+        worst_dominant_array[np.where(ref_array == NoData_value)] = NoData_value
+        worst_dominant_raster_file = join(crop_folder, '{}_worst_dominant.tif'.format(c))
+        Array2Raster(worst_dominant_array, suit_raster_file, worst_dominant_raster_file)
+        
+        worst_count_array[np.where(ref_array == NoData_value)] = NoData_value
+        worst_count_raster_file = join(crop_folder, '{}_worst_count.tif'.format(c))
+        Array2Raster(worst_count_array, suit_raster_file, worst_count_raster_file)
+        
+        worst_dominant_legend_csv = join(crop_folder, '{}_worst_dominant_legend.csv'.format(c))
+        csvw = CSVOperation.CSVWriting()
+        headers = ['raster value', 'number of resriction', 'covariates']
+        csvw.WriteLines(worst_dominant_legend_csv, headers, worst_dominant_legend_list)
+        
+# the commented part below is to deal with the multiple years iteration            
+# =============================================================================
+#             # differenciate the climatic and non-climatic coviriate array
+#             if 'annual' in d_a: 
+#                 climatic_arrays.append(suit_array)
+#             else:
+#                 non_climatic_arrays.append(suit_array)
+#         
+#         to_be_stacked_arrays = []   # the array list used to calculate the overall suitability
+#         i = 0
+#         for sa in climatic_arrays:    # iterate through each climate array and combine it to the non-climatic list
+# 
+#             to_be_stacked_arrays = []
+#             to_be_stacked_arrays.extend(non_climatic_arrays)
+#             to_be_stacked_arrays.append(sa)
+#             
+#             # the overall suitability array based on the maximum value of array list
+#             crop_suit_array = ExtractMaxValueOfStack(to_be_stacked_arrays)
+#             ref_array = homogenize_nodata_area(to_be_stacked_arrays, NoData_value)
+#             crop_suit_array[np.where(ref_array == NoData_value)] = NoData_value
+#             crop_suit_raster_file = join(crop_folder, '{}_suitability_{}.tif'.format(c, years[i]))
+#             Array2Raster(crop_suit_array, suit_raster_file, crop_suit_raster_file)
+#             i += 1
+# =============================================================================
 
 if __name__ == '__main__':
     
@@ -329,7 +410,7 @@ if __name__ == '__main__':
         sys.exit('The directory of cofiguration files "{}" does not exist.'.format(data_path))
     
     # create a directory for suitability maps
-    outSubRoot = join(output_path, 'suitability_maps1')
+    outSubRoot = join(output_path, 'suitability_maps2')
     if not os.path.exists(outSubRoot):
         os.makedirs(outSubRoot, exist_ok = True)
     
@@ -355,7 +436,7 @@ if __name__ == '__main__':
     
     
     suitability_mapping(df_config, df_crop, p_rasters)
-        
+    print('Finished at {}.'.format(dt.datetime.now()))
         
         
         

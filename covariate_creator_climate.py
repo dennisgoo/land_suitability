@@ -475,21 +475,6 @@ class ClimaticCovariate(ClimaticCovariates):
     def GetDailyMaxTempFrequencyRipening(self, tmax_key, start_date, end_date, threshold_tmp):
         func = 'daily_max_temp_ripening'
         return self.CovariateGenerator(func, start_date, end_date, tmax_key, threshold_temp_1=threshold_tmp)
-    
-    
-
-    
-
-def getYearList(start_year, end_year):
-    '''
-    Return a year list based on the given start and end year
-    '''
-    year_list = []
-    y = start_year
-    while y <= end_year:
-        year_list.append(str(y))
-        y += 1
-    return year_list
 
 class ConfigParameters(object):
     '''
@@ -520,6 +505,17 @@ class ConfigParameters(object):
     def GetCropCovariateIndexList(self, section):
         return sorted(list(set([ci.split('_')[0] for ci in self.config[section].keys() if ci != 'crop'])))
 
+
+def getYearList(start_year, end_year):
+    '''
+    Return a year list based on the given start and end year
+    '''
+    year_list = []
+    y = start_year
+    while y <= end_year:
+        year_list.append(str(y))
+        y += 1
+    return year_list
 
 if __name__ == '__main__':
     

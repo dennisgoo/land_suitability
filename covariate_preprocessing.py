@@ -438,7 +438,7 @@ if __name__ == '__main__':
                     refrst = join(data_path, data_layer)
                 else:
                     refrst = p_rasters[0]
-                reproject_raster(join(data_path, data_layer), refrst, outrst)
+                reproject_raster2(join(data_path, data_layer), refrst, outrst)
 #                copyfile(join(data_path, data_layer), outrst)
                 p_rasters.append(outrst)
                 r_types.append(6)
