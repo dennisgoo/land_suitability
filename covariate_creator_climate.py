@@ -18,6 +18,7 @@ from os.path import join
 from os import walk
 import configparser
 import codecs
+import calendar
 
 
 class Raster(object):
@@ -449,6 +450,63 @@ class ClimaticCovariates(object):
         covariate_array = np.where(self.ref_array == self.no_data, self.no_data, covariate_array)
         
         return covariate_array
+    
+    def ExtremeTempFreqPerMonth(self, t1_key, start_date, end_date, threshold_temp_1, direction, out_dir, crop_name, layer_name, ref_rst): 
+        
+        '''
+        A unique function to create climate layers of the frequency of days that the max daily temperature
+        above or below extreme temperature within the interested month.
+        
+        start_date:       the start date of a certain period when the target covariate is matter
+        end_date:         the end date of a certain period when the target covariate  is matter
+        t1_key:           key words of temperature climate data subdir name (or filename)
+        threshold_temp_1: the base temperature threshold of selected crop to calculate 
+                          the target covariate         
+        '''
+        
+        t1_dict = self.__GetFileDictionary__(start_date, end_date, t1_key)
+        
+        array_list = []
+        i = 0
+        for year in t1_dict:
+            if i == 0:
+                start_year = year
+                i+=1
+                
+            daily_array = np.zeros(self.ref_array.shape)
+            accumu_daily_array = np.zeros(self.ref_array.shape)
+            try:
+                for f in t1_dict[year]:
+                    raster_array = self.raster.getRasterArray(f)
+                    if direction == 'below':
+                        daily_array = np.where(raster_array < threshold_temp_1, 1, 0) 
+                    elif direction == 'above':
+                        daily_array = np.where(raster_array > threshold_temp_1, 1, 0) 
+                    accumu_daily_array = accumu_daily_array + daily_array
+            except:
+                pass
+            
+            accumu_daily_array = np.where(self.ref_array == self.no_data, self.no_data, accumu_daily_array)
+            out_raster_file = join(out_dir, '{}_{}_{}.tif'.format(crop_name, layer_name, year))
+            out_raster.array2Raster(accumu_daily_array, ref_rst, out_raster_file)
+            
+            array_list.append(accumu_daily_array)
+            
+        out_rst_mean = join(out_dir, '{}_{}_{}_{}_mean.tif'.format(crop_name, layer_name, start_year, year))
+        mean_array = np.mean(array_list, axis=0)
+        mean_array = np.where(self.ref_array == self.no_data, self.no_data, mean_array)
+        out_raster.array2Raster(mean_array, ref_rst, out_rst_mean)
+        
+        out_rst_median = join(out_dir, '{}_{}_{}_{}_median.tif'.format(crop_name, layer_name, start_year, year))
+        median_array = np.median(array_list, axis=0)
+        median_array = np.where(self.ref_array == self.no_data, self.no_data, median_array)
+        out_raster.array2Raster(median_array, ref_rst, out_rst_median)
+        
+        out_rst_std = join(out_dir, '{}_{}_{}_{}_std.tif'.format(crop_name, layer_name, start_year, year))
+        std_array = np.std(array_list, axis=0)
+        std_array = np.where(self.ref_array == self.no_data, self.no_data, std_array)
+        out_raster.array2Raster(std_array, ref_rst, out_rst_std)
+        
 
 class ClimaticCovariate(ClimaticCovariates):
     
@@ -593,11 +651,21 @@ if __name__ == '__main__':
                         covariate_array = climate_covariate.GetDailyMaxTempFrequencyRipening(key_max, param_list[0], param_list[1], float(param_list[2]) + abstemp)
                     else:
                         print('Error: {} did not generated! {} parameters are required, but only {} were provided!'.format(covariate_dict[c_index], num_required_params, len(param_list)))
+                        
+                elif c_index in ['8', '9']: # max daily temperature frequency ripening
+                    num_required_params = 3
+                    if len(param_list) == num_required_params:
+                        climate_covariate.ExtremeTempFreqPerMonth(key_max, param_list[0], param_list[1], float(param_list[2]) + abstemp, 'above', covariate_dir, crop, covariate_dict[c_index], ref_raster)
+                    else:
+                        print('Error: {} did not generated! {} parameters are required, but only {} were provided!'.format(covariate_dict[c_index], num_required_params, len(param_list)))
                 
+                try:
+                    if covariate_array:    
+                        out_raster_file = join(covariate_dir, '{}_{}_{}_{}.tif'.format(crop, covariate_dict[c_index], s_y, e_y))
+                        out_raster.array2Raster(covariate_array, ref_raster, out_raster_file)
+                except:
+                    pass
                     
-                out_raster_file = join(covariate_dir, '{}_{}_{}_{}.tif'.format(crop, covariate_dict[c_index], s_y, e_y))
-                out_raster.array2Raster(covariate_array, ref_raster, out_raster_file)
-                
     print('Finished at {} ...'.format(dt.datetime.now()))
         
         
