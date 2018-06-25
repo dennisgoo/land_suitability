@@ -585,8 +585,86 @@ class ColdTempFreqPerMonth(ExtremeTempFreqPerMonth):
     
     direction = 'below'       
     
+class AccumulatedDailyTemperature(ClimaticCovariates):
+    
+    direction = ''
+    flowering_accumu_temp = 0
+    
+    def create_array(self, t1_key, t2_key, start_date, end_date, threshold_temp_1, out_dir, crop_name, layer_name, ref_rst):     
+        
+        out_sub_dir = join(out_dir, crop_name, layer_name)
+        if not os.path.exists(out_sub_dir):
+            os.makedirs(out_sub_dir, exist_ok = True)
+        
+        t1_dict = self.__GetFileDictionary__(start_date, end_date, t1_key)
+        t2_dict = self.__GetFileDictionary__(start_date, end_date, t2_key)
+        
+#        array_list = []
+#        i = 0
+        for year in t1_dict:
+#            if i == 0:
+#                start_year = year
+#                i+=1
+            accumu_daily_array = np.zeros(self.ref_array.shape)
+            
+            annual_file_list_min = t1_dict[year]
+            annual_file_list_max = t2_dict[year]
+            accumu_daily_array = np.zeros(self.ref_array.shape)
+            flowering_julian_day_array = np.zeros(self.ref_array.shape)
+            
+            for minf, maxf in zip(annual_file_list_min, annual_file_list_max):
+                
+                m = int(minf[:-4].split('-')[-2])
+                d = int(minf[:-4].split('-')[-1])
+                nth_day = get_nth_day(int(year), m, d)
+                
+                min_raster_array = self.raster.getRasterArray(minf)
+                max_raster_array = self.raster.getRasterArray(maxf)
+                    
+                mean_raster_array = (min_raster_array + max_raster_array) / 2
+                
 
+                if self.direction == 'below':
+                    daily_array = np.where(mean_raster_array < threshold_temp_1, mean_raster_array-threshold_temp_1, 0) 
+                elif self.direction == 'above':
+                    daily_array = np.where(mean_raster_array > threshold_temp_1, mean_raster_array-threshold_temp_1, 0) 
+                
+                accumu_daily_array = accumu_daily_array + daily_array
+                accumu_daily_array = np.where(self.ref_array == self.no_data, self.no_data, accumu_daily_array)
+                if np.amax(accumu_daily_array > 1000):
+                    out_raster_file = join(out_sub_dir, '{}_{}_{}_{}.tif'.format(crop_name, layer_name, year, nth_day))
+                    out_raster.array2Raster(accumu_daily_array, ref_rst, out_raster_file)
 
+                flowering_julian_day_array = np.where(np.logical_and(accumu_daily_array > self.flowering_accumu_temp, flowering_julian_day_array == 0), nth_day, flowering_julian_day_array)
+                
+            flowering_julian_day_array = np.where(self.ref_array == self.no_data, self.no_data, flowering_julian_day_array)
+            out_raster_julian = join(out_sub_dir, '{}_{}_Flowering_Julian_{}.tif'.format(crop_name, layer_name, year))
+            out_raster.array2Raster(flowering_julian_day_array, ref_rst, out_raster_julian)
+            
+#            array_list.append(accumu_daily_array)
+#            
+#        out_rst_mean = join(out_dir, '{}_{}_{}_{}_mean.tif'.format(crop_name, layer_name, start_year, year))
+#        mean_array = np.mean(array_list, axis=0)
+#        mean_array = np.where(self.ref_array == self.no_data, self.no_data, mean_array)
+#        out_raster.array2Raster(mean_array, ref_rst, out_rst_mean)
+#        
+#        out_rst_median = join(out_dir, '{}_{}_{}_{}_median.tif'.format(crop_name, layer_name, start_year, year))
+#        median_array = np.median(array_list, axis=0)
+#        median_array = np.where(self.ref_array == self.no_data, self.no_data, median_array)
+#        out_raster.array2Raster(median_array, ref_rst, out_rst_median)
+#        
+#        out_rst_std = join(out_dir, '{}_{}_{}_{}_std.tif'.format(crop_name, layer_name, start_year, year))
+#        std_array = np.std(array_list, axis=0)
+#        std_array = np.where(self.ref_array == self.no_data, self.no_data, std_array)
+#        out_raster.array2Raster(std_array, ref_rst, out_rst_std)
+        
+        return None
+    
+class AccumulatedDailyTempHot(AccumulatedDailyTemperature):
+    
+    direction = 'above'
+    flowering_accumu_temp = 1282
+    
 
 class ConfigParameters(object):
     '''
@@ -616,6 +694,13 @@ class ConfigParameters(object):
     
     def GetCropCovariateIndexList(self, section):
         return sorted(list(set([ci.split('_')[0] for ci in self.config[section].keys() if ci != 'crop'])))
+
+
+def get_nth_day(year, month, day):
+    
+    days_in_the_year = (dt.date(year, month, day)-dt.date(year, 1, 1)).days + 1
+    
+    return days_in_the_year
 
 
 def getYearList(start_year, end_year):
@@ -655,7 +740,9 @@ def covariateGenerator(cov_index,
     elif cov_index == 8: 
         array = HotTempFreqPerMonth(year_list, data_dir).create_array(tmax_key, start_date, end_date, threshold_temp_max, out_dir, crop_name, layer_name, ref_rst)
     
- 
+    elif cov_index == 9: 
+        array = AccumulatedDailyTempHot(year_list, data_dir).create_array(tmin_key, tmax_key, start_date, end_date, threshold_temp_min, out_dir, crop_name, layer_name, ref_rst)
+    
     return array
 
 
@@ -707,7 +794,12 @@ if __name__ == '__main__':
                 
                 try:
                     if covariate_array is not None:    
-                        out_raster_file = join(covariate_dir, '{}_{}_{}_{}.tif'.format(crop, covariate_dict[c_index], s_y, e_y))
+                        
+                        out_sub_dir = join(covariate_dir, crop, covariate_dict[c_index])
+                        if not os.path.exists(out_sub_dir):
+                            os.makedirs(out_sub_dir, exist_ok = True)
+                        
+                        out_raster_file = join(out_sub_dir, '{}_{}_{}_{}.tif'.format(crop, covariate_dict[c_index], s_y, e_y))
                         out_raster.array2Raster(covariate_array, ref_raster, out_raster_file)
                 except:
                     pass
