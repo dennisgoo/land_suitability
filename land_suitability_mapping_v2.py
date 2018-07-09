@@ -344,7 +344,7 @@ class LandSuitability(object):
             
             worst_dominant_legend_csv = join(out_dir, '{}_worst_dominant_legend.csv'.format(crop_id))
             csvw = CSVOperation.CSVWriting()
-            headers = ['raster value', 'number of resriction', 'covariates']
+            headers = ['raster value', 'number of restriction', 'covariates']
             csvw.WriteLines(worst_dominant_legend_csv, headers, worst_dominant_legend_list)
         else:
             print('Warning! No suitability map for {} was created!'.format(crop_id))
