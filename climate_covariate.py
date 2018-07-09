@@ -1,79 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Created on Fri Apr  6 12:21:31 2018
+Created on Mon Jul  2 16:28:00 2018
 
-This script is for SLMACC project. It creates climatic covariates including:
-    1. Frost risk
-    2. Growing degree days
-    3. Chilling hours
-
-@author: J. Guo
+@author: guoj
 """
 
-from osgeo import gdal, osr
 import numpy as np
 import datetime as dt
 import os.path
 from os.path import join
 from os import walk
-import configparser
-import codecs
-import calendar
 
+from raster import Raster
 
-class Raster(object):
-    '''
-    Read raster file and return raster related information, e.g. raster array, nodata value etc..
-    '''
-    def __init__(self):
-        pass
-
-        
-    def getRasterArray(self, file):
-        try:
-            r=gdal.Open(file)
-        except:
-            SystemExit("No such {} file exists!!!".format(file))
-    
-        self.band=r.GetRasterBand(1)
-        rasterArray = self.band.ReadAsArray().astype(np.float)
-        r = None
-        return rasterArray
-    
-    def getNoDataValue(self, file):
-        
-        try:
-            r=gdal.Open(file)
-        except:
-            SystemExit("No such {} file exists!!!".format(file))
-    
-        self.band=r.GetRasterBand(1)
-        noDataValue = self.band.GetNoDataValue()
-        r = None
-        return noDataValue
-    
-    def array2Raster(self, in_array, ref_raster, new_raster):
-        
-        nodata_value = self.getNoDataValue(ref_raster)
-        raster = gdal.Open(ref_raster)
-        geotransform = raster.GetGeoTransform()
-        originX = geotransform[0]
-        originY = geotransform[3]
-        pixelWidth = geotransform[1]
-        pixelHeight = geotransform[5]
-        cols = in_array.shape[1]
-        rows = in_array.shape[0]
-    
-        driver = gdal.GetDriverByName('GTiff')
-        outRaster = driver.Create(new_raster, cols, rows, 1, gdal.GDT_Float32)
-        outRaster.SetGeoTransform((originX, pixelWidth, 0, originY, 0, pixelHeight))
-        outband = outRaster.GetRasterBand(1)
-        outband.SetNoDataValue(nodata_value)
-        outband.WriteArray(in_array)
-        outRasterSRS = osr.SpatialReference()
-        outRasterSRS.ImportFromWkt(raster.GetProjectionRef())
-        outRaster.SetProjection(outRasterSRS.ExportToWkt())
-        outband.FlushCache()
 
 
 class ExtractTimeInfo(object):
@@ -325,7 +264,9 @@ class AnnualMaxDailyTemperatureFrequency(AnnualExtremeTemperatureFrequency):
     
     direction = 'above'
     
+class AnnualMinDailyTemperatureFrequencyAbove(AnnualExtremeTemperatureFrequency):    
     
+    direction = 'above'   
 
 class AnnualGDD(ClimaticCovariates):
     
@@ -532,17 +473,23 @@ class ExtremeTempFreqPerMonth(ClimaticCovariates):
     direction = ''
     
     def create_array(self, t1_key, start_date, end_date, threshold_temp_1, out_dir, crop_name, layer_name, ref_rst):     
+        
+        accumu_daily_dir = join(out_dir, 'accumulated_daily')
+        if not os.path.exists(accumu_daily_dir):
+            os.makedirs(accumu_daily_dir, exist_ok = True)
+        
         t1_dict = self.__GetFileDictionary__(start_date, end_date, t1_key)
         
         array_list = []
-        i = 0
+#        i = 0
         for year in t1_dict:
-            if i == 0:
-                start_year = year
-                i+=1
+#            if i == 0:
+#                start_year = year
+#                i+=1
                 
             daily_array = np.zeros(self.ref_array.shape)
             accumu_daily_array = np.zeros(self.ref_array.shape)
+            
             try:
                 for f in t1_dict[year]:
                     raster_array = self.raster.getRasterArray(f)
@@ -555,7 +502,7 @@ class ExtremeTempFreqPerMonth(ClimaticCovariates):
                 pass
             
             accumu_daily_array = np.where(self.ref_array == self.no_data, self.no_data, accumu_daily_array)
-            out_raster_file = join(out_dir, '{}_{}_{}.tif'.format(crop_name, layer_name, year))
+            out_raster_file = join(accumu_daily_dir, '{}_{}_{}.tif'.format(crop_name, layer_name, year))
             out_raster.array2Raster(accumu_daily_array, ref_rst, out_raster_file)
             
             array_list.append(accumu_daily_array)
@@ -575,7 +522,7 @@ class ExtremeTempFreqPerMonth(ClimaticCovariates):
         std_array = np.where(self.ref_array == self.no_data, self.no_data, std_array)
         out_raster.array2Raster(std_array, ref_rst, out_rst_std)
         
-        return None
+        return mean_array
  
 class HotTempFreqPerMonth(ExtremeTempFreqPerMonth):
     
@@ -592,19 +539,18 @@ class AccumulatedDailyTemperature(ClimaticCovariates):
     
     def create_array(self, t1_key, t2_key, start_date, end_date, threshold_temp_1, out_dir, crop_name, layer_name, ref_rst):     
         
-        out_sub_dir = join(out_dir, crop_name, layer_name)
-        if not os.path.exists(out_sub_dir):
-            os.makedirs(out_sub_dir, exist_ok = True)
+        daily_dir = join(out_dir, 'daily')
+        if not os.path.exists(daily_dir):
+            os.makedirs(daily_dir, exist_ok = True)
         
         t1_dict = self.__GetFileDictionary__(start_date, end_date, t1_key)
         t2_dict = self.__GetFileDictionary__(start_date, end_date, t2_key)
         
-#        array_list = []
-#        i = 0
+        i = 0
         for year in t1_dict:
-#            if i == 0:
-#                start_year = year
-#                i+=1
+            if i == 0:
+                start_year = year
+                i+=1
             accumu_daily_array = np.zeros(self.ref_array.shape)
             
             annual_file_list_min = t1_dict[year]
@@ -632,31 +578,15 @@ class AccumulatedDailyTemperature(ClimaticCovariates):
                 accumu_daily_array = accumu_daily_array + daily_array
                 accumu_daily_array = np.where(self.ref_array == self.no_data, self.no_data, accumu_daily_array)
                 if np.amax(accumu_daily_array > 1000):
-                    out_raster_file = join(out_sub_dir, '{}_{}_{}_{}.tif'.format(crop_name, layer_name, year, nth_day))
+                    out_raster_file = join(daily_dir, '{}_{}_{}_{}.tif'.format(crop_name, layer_name, year, nth_day))
                     out_raster.array2Raster(accumu_daily_array, ref_rst, out_raster_file)
 
                 flowering_julian_day_array = np.where(np.logical_and(accumu_daily_array > self.flowering_accumu_temp, flowering_julian_day_array == 0), nth_day, flowering_julian_day_array)
                 
             flowering_julian_day_array = np.where(self.ref_array == self.no_data, self.no_data, flowering_julian_day_array)
-            out_raster_julian = join(out_sub_dir, '{}_{}_Flowering_Julian_{}.tif'.format(crop_name, layer_name, year))
+            out_raster_julian = join(out_dir, '{}_{}_Flowering_Julian_{}.tif'.format(crop_name, layer_name, year))
             out_raster.array2Raster(flowering_julian_day_array, ref_rst, out_raster_julian)
             
-#            array_list.append(accumu_daily_array)
-#            
-#        out_rst_mean = join(out_dir, '{}_{}_{}_{}_mean.tif'.format(crop_name, layer_name, start_year, year))
-#        mean_array = np.mean(array_list, axis=0)
-#        mean_array = np.where(self.ref_array == self.no_data, self.no_data, mean_array)
-#        out_raster.array2Raster(mean_array, ref_rst, out_rst_mean)
-#        
-#        out_rst_median = join(out_dir, '{}_{}_{}_{}_median.tif'.format(crop_name, layer_name, start_year, year))
-#        median_array = np.median(array_list, axis=0)
-#        median_array = np.where(self.ref_array == self.no_data, self.no_data, median_array)
-#        out_raster.array2Raster(median_array, ref_rst, out_rst_median)
-#        
-#        out_rst_std = join(out_dir, '{}_{}_{}_{}_std.tif'.format(crop_name, layer_name, start_year, year))
-#        std_array = np.std(array_list, axis=0)
-#        std_array = np.where(self.ref_array == self.no_data, self.no_data, std_array)
-#        out_raster.array2Raster(std_array, ref_rst, out_rst_std)
         
         return None
     
@@ -665,36 +595,6 @@ class AccumulatedDailyTempHot(AccumulatedDailyTemperature):
     direction = 'above'
     flowering_accumu_temp = 1282
     
-
-class ConfigParameters(object):
-    '''
-    This class is developed for getting the parameter values from config.ini file
-    '''
-    def __init__(self, config_file):
-        self.config = configparser.ConfigParser()
-        self.config._interpolation = configparser.ExtendedInterpolation()
-        self.config.read_file(codecs.open(config_file, 'r', 'utf8'))
-    
-    def GetProjectParams(self, proj_header):
-        num_crops = int(self.config.get(proj_header,'num_crops'))
-        climate_data_dir = self.config.get(proj_header,'climateSource')
-        out_dir = self.config.get(proj_header,'outDir')
-        start_year = int(self.config.get(proj_header,'start_year'))
-        end_year = int(self.config.get(proj_header,'end_year'))
-        key_min = self.config.get(proj_header,'key_min_temperature')
-        key_max = self.config.get(proj_header,'key_max_temperature')
-        covariate_dict = {c.split('_')[-1]:self.config.get(proj_header,c) for c in self.config[proj_header].keys() if c.split('_')[0] == 'covariate'}
-        return num_crops, climate_data_dir, out_dir, start_year, end_year, key_min, key_max, covariate_dict
-        
-    def GetCropName(self, section):
-        return self.config.get(section,'crop')
-    
-    def GetParamsList(self, section, keyword):
-        return [self.config.get(section,p) for p in self.config[section].keys() if p.split('_')[0] == keyword]
-    
-    def GetCropCovariateIndexList(self, section):
-        return sorted(list(set([ci.split('_')[0] for ci in self.config[section].keys() if ci != 'crop'])))
-
 
 def get_nth_day(year, month, day):
     
@@ -714,97 +614,42 @@ def getYearList(start_year, end_year):
         y += 1
     return year_list
 
-def covariateGenerator(cov_index,     
-                       year_list, data_dir,  start_date,         end_date, 
-                       tmin_key,  tmax_key,  threshold_temp_min, threshold_temp_max,
-                       out_dir,   crop_name, layer_name,         ref_rst):
+def generate(cov_id,     
+               year_list, data_dir,  start_date,           end_date, 
+               tmin_key,  tmax_key,  threshold_temp_below, threshold_temp_above,
+               out_dir,   crop_name, layer_name,           ref_rst):
     
-    if cov_index in [1,2]:
-        array = AnnualFrostRiskFrequency(year_list, data_dir).create_array(tmin_key, start_date, end_date, threshold_temp_min)
+    if cov_id in ['FFB','FFH']:
+        array = AnnualFrostRiskFrequency(year_list, data_dir).create_array(tmin_key, start_date, end_date, threshold_temp_below)
         
-    elif cov_index == 3:   
-        array = AnnualGDD(year_list, data_dir).create_array(tmin_key, tmax_key, start_date, end_date, threshold_temp_min)
+    elif cov_id == 'GDD':   
+        array = AnnualGDD(year_list, data_dir).create_array(tmin_key, tmax_key, start_date, end_date, threshold_temp_above)
     
-    elif cov_index == 4: 
-        array = AnnualChillHours(year_list, data_dir).create_array(tmin_key, tmax_key, start_date, end_date, threshold_temp_min, threshold_temp_max)
+    elif cov_id == 'CHL': 
+        array = AnnualChillHours(year_list, data_dir).create_array(tmin_key, tmax_key, start_date, end_date, threshold_temp_above, threshold_temp_below)
     
-    elif cov_index == 5: 
+    elif cov_id == 'MMM': 
         array = AnnualMeanMaxMonthlyBasedOnDaily(year_list, data_dir).create_array(tmax_key, start_date, end_date)
     
-    elif cov_index == 6: 
+    elif cov_id == 'AMF': 
         array = AnnualMeanDaily(year_list, data_dir).create_array(tmax_key, start_date, end_date)
     
-    elif cov_index == 7: 
-        array = AnnualMaxDailyTemperatureFrequency(year_list, data_dir).create_array(tmax_key, start_date, end_date, threshold_temp_max)
+    elif cov_id == 'DMR': 
+        array = AnnualMaxDailyTemperatureFrequency(year_list, data_dir).create_array(tmax_key, start_date, end_date, threshold_temp_above)
     
-    elif cov_index == 8: 
-        array = HotTempFreqPerMonth(year_list, data_dir).create_array(tmax_key, start_date, end_date, threshold_temp_max, out_dir, crop_name, layer_name, ref_rst)
-    
-    elif cov_index == 9: 
-        array = AccumulatedDailyTempHot(year_list, data_dir).create_array(tmin_key, tmax_key, start_date, end_date, threshold_temp_min, out_dir, crop_name, layer_name, ref_rst)
+    elif cov_id == 'MIA':
+        array = AnnualMinDailyTemperatureFrequencyAbove(year_list, data_dir).create_array(tmin_key, start_date, end_date, threshold_temp_above)
+#    elif cov_id == 'HOD': 
+#        array = HotTempFreqPerMonth(year_list, data_dir).create_array(tmax_key, start_date, end_date, threshold_temp_above, out_dir, crop_name, layer_name, ref_rst)
+#    
+#    elif cov_id == 'ACT': 
+#        array = AccumulatedDailyTempHot(year_list, data_dir).create_array(tmin_key, tmax_key, start_date, end_date, threshold_temp_above, out_dir, crop_name, layer_name, ref_rst)
+    else:
+        return None
     
     return array
 
 
-if __name__ == '__main__':
-    
-    conf = input('Please enter the full dir and filename of config file\n(Enter): ')
-    
-    while not os.path.isfile(conf):
-        print('The config.ini file does not exist. Would you like to use the default file?')
-        is_default = input('(Yes/No): ')
-        if is_default[0].lower() == 'y': 
-            conf = r'D:\LandSuitability_AG\data\config\config.ini'
-        else:
-            conf = input('Please enter the full dir and filename of config file.\nOr leave it blanket to point to the default file\n (Enter): ')
-    
-    abstemp = 273.15
-    config_params = ConfigParameters(conf)
-    proj_header = 'projectConfig'
-    num_crops, climate_data_dir, out_dir, s_y, e_y, key_min, key_max, covariate_dict = config_params.GetProjectParams(proj_header)
-    
-    covariate_dir = join(out_dir, 'ERA')
-    if not os.path.exists(covariate_dir):
-        os.makedirs(covariate_dir, exist_ok = True)
-    
-    year_list = getYearList(s_y, e_y)    
-    climate_covariate = ClimaticCovariates(year_list, climate_data_dir)
-    ref_raster = climate_covariate.ref_raster
-    
-    out_raster = Raster()
-    for i in range(1, num_crops+1):
-        crop_header = 'crop_{}'.format(i)
-        crop = config_params.GetCropName(crop_header)
-        covariate_index_list = config_params.GetCropCovariateIndexList(crop_header)
-        print(crop)
-        if covariate_index_list:
-            for c_index in covariate_index_list:
-                print('Generate {} at {} ...'.format(covariate_dict[c_index], dt.datetime.now()))
-                param_list = config_params.GetParamsList(crop_header, c_index)
-                
-                if len(param_list) == 4:
-                    covariate_array = covariateGenerator(int(c_index), 
-                                                         year_list, climate_data_dir, param_list[0], param_list[1],
-                                                         key_min, key_max, 
-                                                         float(param_list[2]) + abstemp,  float(param_list[3]) + abstemp,
-                                                         covariate_dir, crop, covariate_dict[c_index], ref_raster)
-                else:
-                    print('Error: {} did not generated! 4 parameters are required, but only {} were provided!'.format(covariate_dict[c_index], len(param_list)))
-                
-                
-                try:
-                    if covariate_array is not None:    
-                        
-                        out_sub_dir = join(covariate_dir, crop, covariate_dict[c_index])
-                        if not os.path.exists(out_sub_dir):
-                            os.makedirs(out_sub_dir, exist_ok = True)
-                        
-                        out_raster_file = join(out_sub_dir, '{}_{}_{}_{}.tif'.format(crop, covariate_dict[c_index], s_y, e_y))
-                        out_raster.array2Raster(covariate_array, ref_raster, out_raster_file)
-                except:
-                    pass
-                    
-    print('Finished at {} ...'.format(dt.datetime.now()))
         
         
         

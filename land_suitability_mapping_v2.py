@@ -13,96 +13,38 @@ as well as an overall suitability map for each crop.
 # -*- coding: utf-8 -*-
 """
 Created on Wed Jan 17 10:50:10 2018
+Revised on 29 June 2018 (v2)
 Land suitability model
 @author: Jing Guo
 """
 
-from osgeo import gdal, osr
 import os
 from os.path import join
-import pandas as pd
+
 import numpy as np
 import sys
 from os import walk
 import CSVOperation
 import datetime as dt
 
-def DataTypeConversion(x):
-    return {
-            'Real': gdal.GDT_Float32,
-            'Integer': gdal.GDT_Int32,
-        }.get(x, gdal.GDT_Unknown)
-    
+from config import ConfigParameters
+from raster import Raster
+from sqlite_conn import Sqlite_connection
 
-def DataTypeConversion_GDAL2NP(x):
-    return {
-            5: np.int,
-            6: np.float,
-        }.get(x, np.float)
-    
-
-def ReadRaster(inRaster, band, dataType):
-    
-    source = gdal.Open(inRaster)
-    band = source.GetRasterBand(band)
-    valArray = band.ReadAsArray().astype(dataType)
-    
-    return valArray
-
-
-def Array2Raster(inArray, refRaster, newRaster):
-    
-    # Define NoData value of new raster
-    NoData_value = float(-9999)
-    
-    raster = gdal.Open(refRaster)
-    refband = raster.GetRasterBand(1)
-    refArray = refband.ReadAsArray().astype(np.float)
-    
-    inArray = np.where(refArray==NoData_value, NoData_value, inArray)
-    
-    geotransform = raster.GetGeoTransform()
-    originX = geotransform[0]
-    originY = geotransform[3]
-    pixelWidth = geotransform[1]
-    pixelHeight = geotransform[5]
-    cols = inArray.shape[1]
-    rows = inArray.shape[0]
-
-    driver = gdal.GetDriverByName('GTiff')
-    outRaster = driver.Create(newRaster, cols, rows, 1, gdal.GDT_Float32)
-    outRaster.SetGeoTransform((originX, pixelWidth, 0, originY, 0, pixelHeight))
-    outband = outRaster.GetRasterBand(1)
-    outband.SetNoDataValue(NoData_value)
-    outband.WriteArray(inArray)
-    outRasterSRS = osr.SpatialReference()
-    outRasterSRS.ImportFromWkt(raster.GetProjectionRef())
-    outRaster.SetProjection(outRasterSRS.ExportToWkt())
-    outband.FlushCache()
-    
-
-def DetermineValueOrder(values):
-    
-    if len(values) > 1:
-        # the -9999 is a end mark of descending attribution while the -9990 is an ascending attribute end mark
-        # these marks are set in 'crop.csv' file in case there is just one vaule in any continual attribute,
-        # to help the script konw the order of the attribute
-        
-        for v in values:
-            if v == -9999:
-                return 'descending'
-            elif v == -9990:
-                return 'ascending'
-
-        for i in range(0, len(values)-1):
-            diff = values[i+1] - values[i]
-            if diff > 0:
-                return 'ascending'
-            elif diff < 0:
-                return 'descending'
-    else:
-        return None
-
+# =============================================================================
+# def DataTypeConversion(x):
+#     return {
+#             'Real': gdal.GDT_Float32,
+#             'Integer': gdal.GDT_Int32,
+#         }.get(x, gdal.GDT_Unknown)
+#     
+# 
+# def DataTypeConversion_GDAL2NP(x):
+#     return {
+#             5: np.int,
+#             6: np.float,
+#         }.get(x, np.float)
+# =============================================================================
 
 def ExtractMaxValueOfStack(array_list):
     
@@ -188,255 +130,302 @@ def strip_end(text, suffix):
         return text
     return text[:len(text)-len(suffix)]
 
+def strip_start(text, suffix):
+    if not text.startswith(suffix):
+        return text
+    return text[len(suffix):]
 
-def suitability_mapping(df_config, df_crop, coviriate_raster_list):
-    '''
-    Core function of suitability mapping.
-    'df_config' - panda dataframe of 'config.csv' file
-    'df_crop' - panda dataframe of 'crop.csv' file
-    'coviriate_raster_list' - a list of all the coviriate layers (directory plus filename)
-    '''
+
+class LandSuitability(object):
     
-    # get a crop list   
-    crops = list(df_crop['Crops'].dropna().unique())
-   
-    # Create suitability rasters of each properties of each crops
-    # iterate each crop
-    for c in crops:
-        print('create {} suitability raster at {}...'.format(c, dt.datetime.now()))
-        subdf_crop = df_crop[df_crop['Crops']==c]    # dataframe of one crop - c
-        suit_level = list(subdf_crop['Suitability']) # the suitability level of crop c
+    def __init__(self):
+        self.no_data = ''
+    
+    def __reclassify_contianual__(self, covariate_array, rulesets):
         
-        crop_folder = join(outSubRoot, c)            # output folder of suitability maps of crop c
-        os.makedirs(crop_folder, exist_ok = True)
+        suit_array = np.zeros(covariate_array.shape)  # an empty array for suitability array (fill with value afterwards)
+        direction = ''
         
-        # climatic layer can be in a time series, and when calculate the overall suitability, they should be seperated,
-        # so here use two lists to distinguish climatic and non-climatic layers
-        
-        suit_arrays = []
-#        non_climatic_arrays = []
-#        climatic_arrays = []
-        years = []   # a list of years of the climatic layers
-        covariate_list = [] # a list of covariates name
-        # iterate each coviriate layer
-        for r in coviriate_raster_list:
-            property_array = ReadRaster(r, 1, np.float)  # an array of the coviriate
-            suit_array = np.zeros(property_array.shape)  # an empty array for suitability array (fill with value afterwards)
-            d_a = r.split('\\')[-1].split('.')[0]        # data attribute name, consistent with the  "Data_attr" value in config.csv
-            covariate_list.append(d_a)                   # this velue is extracted from the filename of coviriate raster. 
-                                                         # When these rasters were created in the 'covireate_preprocessing.py' script, 
-                                                         # their name were set based on the "Data_attr" values.   
-            suit_raster_file = join(crop_folder, '{}_suit_{}.tif'.format(c, d_a)) # raster filename of suitability map of crop c
+        for row in rulesets:
+            suit_level = row['suitability_level']
+            low1 = row['low_value']
+            high1 = row['high_value']
+            low2 = row['low_value_2']
+            high2 = row['high_value_2']
+            
+            # Here we deal with the suitability level one, from which we derive the direction of covariate response curve
+            if suit_level == 1:
+                # This is bell shaped curve situation 
+                # (only under this circumstance low2 or high2 of the rest of suitability level may exist)
+                if low1 is not None and high1 is not None: 
+                    direction = 'two'
+                    suit_array = np.where(np.logical_and(covariate_array>=low1, covariate_array<high1), suit_level, suit_array)
+                                  
+                # This is one direction descending situation
+                elif low1 is not None and high1 is None:     
+                    direction = 'descd'
+                    suit_array = np.where(covariate_array>=low1, suit_level, suit_array)
+                    
+                # This is one direction ascending situation
+                elif low1 is None and high1 is not None:     
+                    direction = 'ascd'
+                    suit_array = np.where(covariate_array<=high1, suit_level, suit_array)
+                    
+                # This is low1 and high1 are both None, which shouldn't exist    
+                else:
+                    print('Warning! Unexpected "None" value exist in both "low_value" and "high_value" of' 
+                          'suitability level 1 of crop {}, covariate {}. Please check the database and' 
+                          'set the correct values.'.format(row['crop_id'], row['covariate_id']))
+            
+            # From here we dealing with the rest of suitability levels
+            else:
+                # If it is one direction (ascending or descending), then we don't have to care about the low2 and high2
+                if direction == 'descd':
+                    if low1 is not None and high1 is not None:
+                        suit_array = np.where(np.logical_and(covariate_array>=low1, covariate_array<high1), suit_level, suit_array)
+                    elif low1 is None and high1 is not None:
+                        suit_array = np.where(covariate_array<high1, suit_level, suit_array)
 
-            # When dealing with the climatic rasters the 'year' number need to be eliminated,
-            # to keep the consistency of the "Data_attr" values in config.csv.
-            # 'annual' here is the key word to determine wether the coviriate raster is climatic or not,
-            # and this is based on the coviriate rasters's filename. 
-            # BE CAUTION!!! If the filename were changed,
-            # e.g. when monthly raster are created, this key words will not work, it should be changed to 'monthly'
-            # or whatever that can differenciate the climatic raster from the others.
-            if 'annual' in d_a:                           
-                years.append(d_a.split('_')[-1])
-                d_a = strip_end(d_a, d_a.split('_')[-1])
-                                
-            
-            subdf_conf = df_config[df_config['Data_attr'] == d_a] # a sub-dataframe of config file dataframe which only has records of coviriate 'd_a'
-            crop_a = subdf_conf['Crop_attr']                      # extract the crop attributes 
-            
-            # the number of crop attribute is used to determine the type of coviriate, either continual or categorical,
-            # as well as to determine, when it is a continual coviriate, wether it is a one direction criterion (either ascending or descending) 
-            # or a two directions criterion (both ascending and descending). 
-            if len(crop_a) == 1:
-                crop_attr_value = list(subdf_crop[crop_a.item()])
-                order = DetermineValueOrder(crop_attr_value)   # DetermineValueOrder function is used to check whether the current crop attribute is ascending or descending
+                elif direction == 'ascd':
+                    if low1 is not None and high1 is not None:
+                        suit_array = np.where(np.logical_and(covariate_array>low1, covariate_array<=high1), suit_level, suit_array)
+                    elif low1 is not None and high1 is None:
+                        suit_array = np.where(covariate_array>low1, suit_level, suit_array)
                 
-                if order is not None:
-                              
-                    for i in range(0, len(suit_level)):   # iterate through each suitability level to project the coviriate values
-                        # extract the criterion of crop attribution value of corresponding to each suitability level
-                        value = subdf_crop[subdf_crop['Suitability'] == suit_level[i]].iloc[0][crop_a.item()]
-                        if order == 'ascending':
-                            # below are the logical rule of projecting crop attribution value to suitability level
-                            if i == 0: 
-                                suit_array = np.where(property_array<=value, suit_level[i], suit_array)
-                            else:
-                                value0 = subdf_crop[subdf_crop['Suitability'] == suit_level[i-1]].iloc[0][crop_a.item()]
-                                if np.isnan(value) == False and (value != -9990):
-                                    suit_array = np.where(np.logical_and(property_array>value0, property_array<=value), suit_level[i], suit_array)
-                                else:
-                                    suit_array = np.where(property_array>value0, suit_level[i], suit_array)
-                                    break
-                        
-                        elif order == 'descending':
-                            if i == 0: 
-                                suit_array = np.where(property_array>=value, suit_level[i], suit_array)
-                            else:
-                                value0 = subdf_crop[subdf_crop['Suitability'] == suit_level[i-1]].iloc[0][crop_a.item()]
-                                if (np.isnan(value) == False) and (value != -9999):
-                                    suit_array = np.where(np.logical_and(property_array<value0, property_array>=value), suit_level[i], suit_array)
-                                else:
-                                    suit_array = np.where(property_array<value0, suit_level[i], suit_array)
-                                    break
-            # the situation of both ascending and descending attribututes exist (Only for the continual attributes)
-            # BE CAUTION!!! If it is a categorical coviriate and has only two crop attributes then the below script cannot deal with it
-            # Currently assume the categorical coviriate must have 3 or more crop attributes
-            elif len(crop_a) == 2:   
-                value = [None] * 2
-                order = [None] * 2
-                value0 = [None] * 2
-                crop_attr_value = [None] * 2
-                for i in range(0, len(crop_a)):    
-                    crop_attr_value[i] = list(subdf_crop[crop_a.iloc[i]])
-                    order[i] = DetermineValueOrder(crop_attr_value[i])
-                    
-                if (order[0] is not None) and (order[1] is not None):
-                    
-                    # switch the order if necessary to make sure the fisrt crop attribute is always ascending 
-                    if (order[0] == 'ascending') and (order[1] == 'descending'):
-                        pass
-                    elif (order[0] == 'descending') and (order[1] == 'ascending'):          
-                        tmp = crop_a.iloc[0]
-                        crop_a.iloc[0] = crop_a.iloc[1]
-                        crop_a.iloc[1] = tmp
-                        tmp = None
-                    
-                    # iterate through each suitability level    
-                    for i in range(0, len(suit_level)):
-                        # value[0] is for the ascending attribute while value[1] is for the descending attribute 
-                        value[0] = subdf_crop[subdf_crop['Suitability'] == suit_level[i]].iloc[0][crop_a.iloc[0]]
-                        value[1] = subdf_crop[subdf_crop['Suitability'] == suit_level[i]].iloc[0][crop_a.iloc[1]]
-                        
-                        # below are the logical rule of projecting crop attribution value to suitability level
-                        if i == 0: 
-                            if value[0] < value[1]:
-                                print('Irrational values occur in {} or in {}. \nCannot generate suitability map of "{}".'.format(crop_a.iloc[0], crop_a.iloc[1], d_a))
-                                break
-                            suit_array = np.where(np.logical_and(property_array<=value[0], property_array>value[1]), suit_level[i], suit_array)
+                # If it is two direction then we deal with the most complex situation 
+                else:
+                    if low1 is not None and high1 is not None:
+                        if low2 is not None and high2 is not None:
+                            suit_array = np.where(np.logical_or(np.logical_and(covariate_array>=low1, covariate_array<high1), 
+                                                                np.logical_and(covariate_array>=low2, covariate_array<high2)), 
+                                                  suit_level, suit_array)
+                        elif low2 is None and high2 is not None:
+                            suit_array = np.where(np.logical_or(np.logical_and(covariate_array>=low1, covariate_array<high1), 
+                                                                covariate_array<high2), 
+                                                  suit_level, suit_array)
+                        elif low2 is not None and high2 is None:
+                            suit_array = np.where(np.logical_or(np.logical_and(covariate_array>=low1, covariate_array<high1), 
+                                                                covariate_array>=low2), 
+                                                  suit_level, suit_array)
                         else:
-                            # value0[0] is for the previous ascending attribute 
-                            # value0[1] is for the previous descending attribute 
-                            value0[0] = subdf_crop[subdf_crop['Suitability'] == suit_level[i-1]].iloc[0][crop_a.iloc[0]]
-                            value0[1] = subdf_crop[subdf_crop['Suitability'] == suit_level[i-1]].iloc[0][crop_a.iloc[1]]
-                            if ((np.isnan(value[0]) == False) and (value[0] != -9990)) and ((np.isnan(value[1]) == False) and (value[1] != -9999)):
-                                suit_array = np.where(np.logical_or(np.logical_and(property_array>value0[0], property_array<=value[0]), np.logical_and(property_array<=value0[1], property_array>value[1])), suit_level[i], suit_array)
-                            elif ((np.isnan(value[0]) == True) or (value[0] == -9990)) and ((np.isnan(value[1]) == False) and (value[1] != -9999)):
-                                suit_array = np.where(np.logical_and(property_array<=value0[1], property_array>value[1]), suit_level[i], suit_array)                       
-                                if (np.isnan(value0[0]) == False) and (value0[0] != -9990):
-                                    suit_array = np.where(property_array>value0[0], suit_level[i], suit_array)
-                            
-                            elif ((np.isnan(value[0]) == False) and (value[0] != -9990)) and ((np.isnan(value[1]) == True) or (value[1] == -9999)):
-                                suit_array = np.where(np.logical_and(property_array>value0[0], property_array<=value[0]), suit_level[i], suit_array)
-                                if (np.isnan(value0[1]) == False) and (value0[1] != -9999):
-                                    suit_array = np.where(property_array<=value0[1], suit_level[i], suit_array)
-                                
-                            else:
-                                if ((np.isnan(value0[0]) == True) or (value0[0] == -9990)) and ((np.isnan(value0[1]) == False) and (value0[1] != -9999)):
-                                    suit_array = np.where(property_array<=value0[1], suit_level[i], suit_array)
-                                elif ((np.isnan(value0[0]) == False) and (value0[0] != -9990)) and ((np.isnan(value0[1]) == True) or (value0[1] == -9999)):
-                                    suit_array = np.where(property_array>value0[0], suit_level[i], suit_array)
-                                elif ((np.isnan(value0[0]) == False) and (value0[0] != -9990)) and ((np.isnan(value0[1]) == False) and (value0[1] != -9999)):
-                                    suit_array = np.where(np.logical_or(property_array>value0[0], property_array<=value0[1]), suit_level[i], suit_array)
-
-            # deal with the categorical coviriates
-            # Again!!! assume categorical coviriates have 3 or more crop attributes (caterogries)
-            elif len(crop_a) > 2:
-                for j in range(0, len(crop_a)):    
+                            suit_array = np.where(np.logical_and(covariate_array>=low1, covariate_array<high1), suit_level, suit_array)
                         
-                    for i in range(0, len(suit_level)):
-                        value = subdf_crop[subdf_crop['Suitability'] == suit_level[i]].iloc[0][crop_a.iloc[j]]
-                        if np.isnan(value) == False:
-                            suit_array = np.where(property_array==value, suit_level[i], suit_array)
-                            break
+                    elif low1 is None and high1 is not None:
+                        if low2 is not None and high2 is not None:
+                            suit_array = np.where(np.logical_or(covariate_array<high1, 
+                                                                np.logical_and(covariate_array>=low2, covariate_array<high2)), 
+                                                  suit_level, suit_array)
+                        elif low2 is not None and high2 is None:
+                            suit_array = np.where(np.logical_or(covariate_array<high1, 
+                                                                covariate_array>=low2), 
+                                                  suit_level, suit_array)
+                        #This situation shouln't exist, because bath low1 and low2 are none means tow parts are in the same direction
+                        elif low2 is None and high2 is not None:
+                            print('Warning! Unexpected value exist in either "low_value_1" or "low_value_2" of suitability'
+                                  'level {} of crop {}, covariate {}. Please check the database and set the correct'
+                                  'values.'.format(row['suitability_level'], row['crop_id'], row['covariate_id']))
+                        else:
+                            suit_array = np.where(covariate_array<high1, suit_level, suit_array)
+                    
+                    elif low1 is not None and high1 is None:
+                        if low2 is not None and high2 is not None:
+                            suit_array = np.where(np.logical_or(covariate_array>=low1, 
+                                                                np.logical_and(covariate_array>=low2, covariate_array<high2)), 
+                                                  suit_level, suit_array)
+                        elif low2 is None and high2 is not None:
+                            suit_array = np.where(np.logical_or(covariate_array>=low1, 
+                                                                covariate_array<high2), 
+                                                  suit_level, suit_array)
+                        #This situation shouln't exist, because bath low1 and low2 are none means tow parts are in the same direction
+                        elif low2 is not None and high2 is None:
+                            print('Warning! Unexpected value exist in either "high_value_1" or "high_value_2" of suitability'
+                                  'level {} of crop {}, covariate {}. Please check the database and set the correct'
+                                  'values.'.format(row['suitability_level'], row['crop_id'], row['covariate_id']))
+                        else:
+                            suit_array = np.where(covariate_array>low1, suit_level, suit_array)
+                    
+                    # When both low1 and high1 are None, low2 and high2 must be None, otherwise we should put the low2 and high2 to low1 and high1
+                    else:
+                        if low2 is not None or high2 is not None:
+                            print('Warning! Unexpected value exist in either "low_value_2" or "high_value_2" of suitability'
+                                  'level {} of crop {}, covariate {}. Please check the database and set the correct'
+                                  'values.'.format(row['suitability_level'], row['crop_id'], row['covariate_id']))
+                            
+        return suit_array
+    
+    def __reclassify_catorgorical__(self, covariate_array, rulesets):            
+                
+        suit_array = np.zeros(covariate_array.shape)  # an empty array for suitability array (fill with value afterwards)
+        
+        all_cat_values_not_level4 = []
+        for row in rulesets:
+            suit_level = row['suitability_level']
             
-            suit_array[np.where(property_array == NoData_value)] = NoData_value
-            Array2Raster(suit_array, r, suit_raster_file)      # export the suitability map of each coviriate      
+            if row['cat_value'] is not None:
+                cat_values = [int(x) for x in row['cat_value'].split(',')]
+                suit_array = np.where(np.isin(covariate_array, cat_values), suit_level, suit_array)
+                all_cat_values_not_level4 = all_cat_values_not_level4 + cat_values
+            
+            # If the catorgorical value is None at certian suitability level, then we check if it is at levle 4. 
+            # If so then we set the rest of class values to level 4, otherwise don't create that level. 
+            else:
+                if suit_level == 4:
+                    # Set all cells, where their class value is not in the all_cat_values_not_level4 list, to level 4 
+                    suit_array = np.where(np.isin(covariate_array, all_cat_values_not_level4, invert=True), suit_level, suit_array)
+        
+        return suit_array
+    
+    def mapping(self, crop_id, covariate_rasters, conn, covariate_root_dir, suit_root_dir):
+        
+        raster = Raster()
+        self.no_data =raster.getNoDataValue(covariate_rasters[-1])
+        ref_rst = covariate_rasters[-1]
+        covariate_id_list = []
+        suit_array_stack = []
+        
+        filepath = strip_end(ref_rst, ref_rst.split('\\')[-1])
+        out_dir = join(suit_root_dir, strip_start(filepath, covariate_root_dir)[1:]) # the [1:] is for removing the first and the last '\' of string
+        
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok = True)
+         
+        for rst in covariate_rasters:
+            
+            filename = rst.split('\\')[-1].split('.')[0]
+            
+            if len(filename.split('_')) == 1:
+                covariate_id = filename
+                covariate_id_list.append(covariate_id)
+                out_raster = join(out_dir, 'suitability_{}_{}.tif'.format(crop_id, covariate_id))
+            else:
+                covariate_id = filename.split('_')[1]
+                covariate_id_list.append(covariate_id)
+                time_span = '{}_{}'.format(filename.split('_')[-2], filename.split('_')[-1])
+                out_raster = join(out_dir, 'suitability_{}_{}_{}.tif'.format(crop_id, covariate_id, time_span))
+            
+            with conn as cur:
+                rows = cur.execute("select * from suitability_rule where crop_id=? and covariate_id=? order by suitability_level", (crop_id,covariate_id,)).fetchall()
+                is_continual = cur.execute("select * from Covariate where id=?", (covariate_id,)).fetchone()['iscontinual']
+            
+            # If the query returns none then move to the next covariate
+            if rows:
+                covariate_array = raster.getRasterArray(rst)  # array of the covariate
+                
+                if is_continual == 1:
+                    suit_array = self.__reclassify_contianual__(covariate_array, rows)
+                else:
+                    suit_array = self.__reclassify_catorgorical__(covariate_array, rows)
+                
+                suit_array[np.where(covariate_array == self.no_data)] = self.no_data
+                
+                raster.array2Raster(suit_array, ref_rst, out_raster)
+                
+                suit_array_stack.append(suit_array)
+            else:
+                print('Warning! Suitability ruleset for {}, {} not found! Please check the database.'.format(crop_id, covariate_id))
+        
+        if len(suit_array_stack) > 0:
+            crop_suit_array = ExtractMaxValueOfStack(suit_array_stack)
+            ref_array = homogenize_nodata_area(suit_array_stack, self.no_data)
+            crop_suit_array[np.where(ref_array == self.no_data)] = self.no_data
+            crop_suit_raster = join(out_dir, '{}_suitability.tif'.format(crop_id))
+            raster.array2Raster(crop_suit_array, ref_rst, crop_suit_raster)
+            
+            print('create dominant worst covariate raster at {}...'.format(dt.datetime.now()))
+            worst_dominant_array, worst_count_array, worst_dominant_legend_list = ExtractMaxValueIndexBinaryOfStack(suit_array_stack, covariate_id_list, 4)
+            
+            worst_dominant_array[np.where(ref_array == self.no_data)] = self.no_data
+            worst_dominant_raster_file = join(out_dir, '{}_worst_dominant.tif'.format(crop_id))
+            raster.array2Raster(worst_dominant_array, ref_rst, worst_dominant_raster_file)
+            
+            worst_count_array[np.where(ref_array == self.no_data)] = self.no_data
+            worst_count_raster_file = join(out_dir, '{}_worst_count.tif'.format(crop_id))
+            raster.array2Raster(worst_count_array, ref_rst, worst_count_raster_file)
+            
+            worst_dominant_legend_csv = join(out_dir, '{}_worst_dominant_legend.csv'.format(crop_id))
+            csvw = CSVOperation.CSVWriting()
+            headers = ['raster value', 'number of resriction', 'covariates']
+            csvw.WriteLines(worst_dominant_legend_csv, headers, worst_dominant_legend_list)
+        else:
+            print('Warning! No suitability map for {} was created!'.format(crop_id))
 
-            suit_arrays.append(suit_array)
-        
-        crop_suit_array = ExtractMaxValueOfStack(suit_arrays)
-        ref_array = homogenize_nodata_area(suit_arrays, NoData_value)
-        crop_suit_array[np.where(ref_array == NoData_value)] = NoData_value
-        crop_suit_raster_file = join(crop_folder, '{}_suitability.tif'.format(c))
-        Array2Raster(crop_suit_array, suit_raster_file, crop_suit_raster_file)
-        
-        print('create dominant worst covariate raster at {}...'.format(dt.datetime.now()))
-        worst_dominant_array, worst_count_array, worst_dominant_legend_list = ExtractMaxValueIndexBinaryOfStack(suit_arrays, covariate_list, 4)
-        
-        worst_dominant_array[np.where(ref_array == NoData_value)] = NoData_value
-        worst_dominant_raster_file = join(crop_folder, '{}_worst_dominant.tif'.format(c))
-        Array2Raster(worst_dominant_array, suit_raster_file, worst_dominant_raster_file)
-        
-        worst_count_array[np.where(ref_array == NoData_value)] = NoData_value
-        worst_count_raster_file = join(crop_folder, '{}_worst_count.tif'.format(c))
-        Array2Raster(worst_count_array, suit_raster_file, worst_count_raster_file)
-        
-        worst_dominant_legend_csv = join(crop_folder, '{}_worst_dominant_legend.csv'.format(c))
-        csvw = CSVOperation.CSVWriting()
-        headers = ['raster value', 'number of resriction', 'covariates']
-        csvw.WriteLines(worst_dominant_legend_csv, headers, worst_dominant_legend_list)
-        
-# the commented part below is to deal with the multiple years iteration            
-# =============================================================================
-#             # differenciate the climatic and non-climatic coviriate array
-#             if 'annual' in d_a: 
-#                 climatic_arrays.append(suit_array)
-#             else:
-#                 non_climatic_arrays.append(suit_array)
-#         
-#         to_be_stacked_arrays = []   # the array list used to calculate the overall suitability
-#         i = 0
-#         for sa in climatic_arrays:    # iterate through each climate array and combine it to the non-climatic list
-# 
-#             to_be_stacked_arrays = []
-#             to_be_stacked_arrays.extend(non_climatic_arrays)
-#             to_be_stacked_arrays.append(sa)
-#             
-#             # the overall suitability array based on the maximum value of array list
-#             crop_suit_array = ExtractMaxValueOfStack(to_be_stacked_arrays)
-#             ref_array = homogenize_nodata_area(to_be_stacked_arrays, NoData_value)
-#             crop_suit_array[np.where(ref_array == NoData_value)] = NoData_value
-#             crop_suit_raster_file = join(crop_folder, '{}_suitability_{}.tif'.format(c, years[i]))
-#             Array2Raster(crop_suit_array, suit_raster_file, crop_suit_raster_file)
-#             i += 1
-# =============================================================================
 
+def get_cova_raster_list(crop, root_dir):
+    
+    has_climate = False
+    covariate_rasters = []
+    for (dirpath, subdirname, filenames) in walk(root_dir):
+        if dirpath == root_dir:  # get all the raster under root dir which are share used covariate raster such as slope, ph etc.. 
+            for f in filenames:
+                if f.split('.')[-1].lower()[:3] == 'tif':
+                    covariate_rasters.append(join(dirpath, f))
+                    
+        if dirpath.split('\\')[-1] == crop:
+            for f in filenames:
+                if f.split('.')[-1].lower()[:3] == 'tif':
+                    covariate_rasters.append(join(dirpath, f))
+                    has_climate = True
+            break
+    return covariate_rasters, has_climate
+
+    
+def main():    
+    
+    conf = input('Please enter the full dir and filename of config file\n(Enter): ')
+    
+    while not os.path.isfile(conf):
+        print('The config.ini file does not exist. Would you like to use the default file?')
+        is_default = input('(Yes/No): ')
+        if is_default[0].lower() == 'y': 
+            conf = r'config.ini'
+        else:
+            conf = input('Please enter the full dir and filename of config file.\nOr leave it blank to point to the default file\n (Enter): ')
+    
+    config_params = ConfigParameters(conf)
+    proj_header = 'projectConfig'
+#    sui_header = 'landSuitability'
+    
+    db_file = config_params.GetDB(proj_header)
+    covariates_dir = config_params.GetProcessedCovariateDir(proj_header)
+    suit_map_dir = config_params.GetSuitabilityParams(proj_header)
+    
+    if not os.path.exists(covariates_dir):
+        sys.exit('The directory of cofiguration files "{}" does not exist.'.format(covariates_dir))
+    
+    
+    conn = Sqlite_connection(db_file)
+    
+    crops_id = []
+    crops = []
+    
+    with conn as cur:
+        rows = cur.execute("select * from crop").fetchall()
+        
+    for row in rows:
+        crops_id.append(row['id'])
+        crops.append(row['crop'])
+    
+    landsuit = LandSuitability()
+    
+    for crop_id, crop in zip(crops_id, crops):
+        
+        print('Processing {} at {}.'.format(crop, dt.datetime.now()))
+        
+        covariate_rasters, has_climate = get_cova_raster_list(crop, covariates_dir)
+        
+        if len(covariate_rasters) > 0 and has_climate == True:
+            landsuit.mapping(crop_id, covariate_rasters, conn, covariates_dir, suit_map_dir)
+        else:
+            print('Warning! Covariate raster for {} not found!'.format(crop))
+    
+    print('End at {}.'.format(dt.datetime.now()))
+    
+    
 if __name__ == '__main__':
     
-    config_path = r'D:\LandSuitability_AG\data\config'     # the path of the two configration files
-    output_path = r'D:\LandSuitability_AG\output'          # the path of output rasters 
-    data_path = join(output_path, 'original_property')     # the path of coviriate layers 
-    
-    if not os.path.exists(data_path):
-        sys.exit('The directory of cofiguration files "{}" does not exist.'.format(data_path))
-    
-    # create a directory for suitability maps
-    outSubRoot = join(output_path, 'suitability_maps2')
-    if not os.path.exists(outSubRoot):
-        os.makedirs(outSubRoot, exist_ok = True)
-    
-    # Set NoData value of new raster
-    NoData_value = -9999
-
-    
-    config_file = join(config_path, 'config.csv')
-    crop_file = join(config_path, 'crops.csv')
-    
-    df_config = pd.read_csv(config_file, thousands=',')
-    df_crop = pd.read_csv(crop_file, thousands=',')
+    main()    
     
     
-    # get all the coviriate tif layers
-    p_rasters = []
-    for (root, subroot, filenames) in walk(data_path):
-        for f in filenames:
-            if f.split('.')[-1].lower() in ['tif', 'tiff']:
-                p_rasters.append(join(root, f))
-
-        break
-    
-    
-    suitability_mapping(df_config, df_crop, p_rasters)
-    print('Finished at {}.'.format(dt.datetime.now()))
         
         
         
