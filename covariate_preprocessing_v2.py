@@ -77,7 +77,7 @@ class CovariateGenerator(GeoProcessing):
             new_filename = join(out_dir, '{}.tif'.format(cova_id))
             shutil.copy(terrain_file, new_filename)
     
-    def create_climate_covariates(self, climate_dir, start_year, end_year, key_min, key_max, out_dir):
+    def create_climate_covariates(self, climate_dir, start_year, end_year, key_min, key_max, key_pcp, out_dir):
         abstemp = 273.15
         
         year_list = cc.getYearList(start_year, end_year)    
@@ -127,18 +127,34 @@ class CovariateGenerator(GeoProcessing):
                         else:
                             t_above = None
                             
-                        
+                        if covariate['pcp_above'] is not None:
+                            try:
+                                pcp_above = float(covariate['pcp_above'])
+                            except ValueError:
+                                pcp_above = None
+                        else:
+                            pcp_above = None
+                            
+                        if covariate['pcp_below'] is not None:
+                            try:
+                                pcp_below = float(covariate['pcp_below'])
+                            except ValueError:
+                                pcp_below = None
+                        else:
+                            pcp_below = None
+                            
                         out_sub_dir = join(out_dir, crop)
                         if not os.path.exists(out_sub_dir):
                             os.makedirs(out_sub_dir, exist_ok = True)
                                     
                         covariate_array = cc.generate(covariate['covariate_id'], year_list, 
-                                                             climate_dir,           covariate['start_date'],
-                                                             covariate['end_date'],     key_min,
-                                                             key_max,                   t_below,
-                                                             t_above,                   out_sub_dir, 
-                                                             crop_id,                   covariate['covariate_id'], 
-                                                             ref_raster)
+                                                      climate_dir,               covariate['start_date'],
+                                                      covariate['end_date'],     key_min,
+                                                      key_max,                   key_pcp,
+                                                      t_below,                   t_above,
+                                                      pcp_above,                 pcp_below,
+                                                      out_sub_dir,               crop_id,
+                                                      covariate['covariate_id'], ref_raster)
         
                         try:
                             if covariate_array is not None:    
@@ -202,7 +218,7 @@ def main():
     
     # 2. Create climate covariates
     cli_cova_dir = config_params.GetClimateCovariateDir(proj_header)
-    climate_dir, start_year, end_year, key_min, key_max = config_params.GetClimateCovariateParams(proj_header, cli_header)
+    climate_dir, start_year, end_year, key_min, key_max, key_pcp = config_params.GetClimateCovariateParams(proj_header, cli_header)
     cli_scenario = config_params.GetClimateScenario(proj_header)
     
     # this is the climate data source directory. If use other climate scenario just change the era to other rcp plus climate model
@@ -211,7 +227,7 @@ def main():
     # This is the output directory of created climate covariates. It will also be used by the suitability mapping app.
     covariate_sub_dir = join(cli_cova_dir, cli_scenario['era'])
 
-    cova.create_climate_covariates(climate_dir, start_year, end_year, key_min, key_max, covariate_sub_dir)    
+    cova.create_climate_covariates(climate_dir, start_year, end_year, key_min, key_max, key_pcp, covariate_sub_dir)    
 
     
     # 3. covariates processing, including reprojection and resampling
@@ -229,7 +245,7 @@ def main():
                 new_filename = join(Procd_cova_dir, f)
                 shutil.copy(join(subdirpath, f), new_filename)    
     
-    # second deal with the rest    
+    # second, deal with the rest    
     cova.set_ref_raster(soil_cova_dir)
     cova.covariate_processing(target_dirs, Procd_cova_dir)
 

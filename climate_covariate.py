@@ -224,6 +224,7 @@ class AnnualExtremeTemperatureFrequency(ClimaticCovariates):
     '''
     
     direction = ''
+    thres_num_days = 0
     
     def create_array(self, t1_key, start_date, end_date, base_temp):    
         
@@ -246,7 +247,7 @@ class AnnualExtremeTemperatureFrequency(ClimaticCovariates):
                 
                 accumu_daily_array = accumu_daily_array + daily_array
             
-            annual_frequency_array = np.where(accumu_daily_array != 0, 1, 0)
+            annual_frequency_array = np.where(accumu_daily_array > self.thres_num_days, 1, 0)
             
             covariate_array = covariate_array + annual_frequency_array 
             
@@ -267,6 +268,11 @@ class AnnualMaxDailyTemperatureFrequency(AnnualExtremeTemperatureFrequency):
 class AnnualMinDailyTemperatureFrequencyAbove(AnnualExtremeTemperatureFrequency):    
     
     direction = 'above'   
+    
+class HeatFreqHarvest(AnnualExtremeTemperatureFrequency):
+     
+    direction = 'above'
+    thres_num_days = 3
 
 class AnnualGDD(ClimaticCovariates):
     
@@ -393,6 +399,49 @@ class AnnualMeanDaily(ClimaticCovariates):
         
         return covariate_array
 
+
+class MeanTemperature(ClimaticCovariates):
+    
+    '''
+    Mean temperature of certain period of a year (e.g July).
+    The difference between this class and the AnnualMeanDaily is this class use averaged daily temperature.
+    '''
+    
+    def create_array(self, t1_key, t2_key, start_date, end_date):     
+
+        
+        t1_dict = self.__GetFileDictionary__(start_date, end_date, t1_key)
+        t2_dict = self.__GetFileDictionary__(start_date, end_date, t2_key)
+        
+        total_years = len(t1_dict)
+        
+        covariate_array = np.zeros(self.ref_array.shape)
+
+        for year in t1_dict:
+
+            annual_file_list_min = t1_dict[year]
+            annual_file_list_max = t2_dict[year]
+            annual_average_array = np.zeros(self.ref_array.shape)
+
+            
+            for minf, maxf in zip(annual_file_list_min, annual_file_list_max):
+                
+                min_raster_array = self.raster.getRasterArray(minf)
+                max_raster_array = self.raster.getRasterArray(maxf)
+                    
+                mean_raster_array = (min_raster_array + max_raster_array) / 2
+                annual_average_array = annual_average_array + mean_raster_array
+            
+            annual_average_array = annual_average_array / len(annual_file_list_min)
+            annual_average_array = annual_average_array - 273.15
+            
+            covariate_array = covariate_array + annual_average_array 
+            
+        covariate_array = covariate_array / total_years
+        covariate_array = np.where(self.ref_array == self.no_data, self.no_data, covariate_array)
+        
+        return covariate_array
+
 class AnnualMeanMaxMonthlyBasedOnDaily(ClimaticCovariates):    
     
     '''
@@ -457,6 +506,79 @@ class AnnualMeanMaxMonthlyBasedOnDaily(ClimaticCovariates):
         
         return covariate_array
 
+
+class AnnualPCP(ClimaticCovariates):
+    
+    def create_array(self, pcp_key, start_date, end_date):
+        
+        pcp_dict = self.__GetFileDictionary__(start_date, end_date, pcp_key)
+        total_years = len(pcp_dict)
+        
+        covariate_array = np.zeros(self.ref_array.shape)
+        
+        for year in pcp_dict:
+            annual_file_list = pcp_dict[year]
+            annual_array = np.zeros(self.ref_array.shape)
+            
+            for f in annual_file_list:
+                raster_array = self.raster.getRasterArray(f)
+                annual_array = annual_array + raster_array
+            
+            
+            covariate_array = covariate_array + annual_array 
+            
+        covariate_array = covariate_array / total_years
+        covariate_array = np.where(self.ref_array == self.no_data, self.no_data, covariate_array)
+        
+        return covariate_array
+
+
+class PCPFreqEvery7Days(ClimaticCovariates):
+    
+    direction = ''
+    thres_num_days = 0
+    
+    def create_array(self, pcp_key, start_date, end_date, base_pcp):
+        
+        pcp_dict = self.__GetFileDictionary__(start_date, end_date, pcp_key)
+        total_years = len(pcp_dict)
+        
+        covariate_array = np.zeros(self.ref_array.shape)
+        
+        for year in pcp_dict:
+            annual_file_list = pcp_dict[year]
+            annual_frequency_array = np.zeros(self.ref_array.shape)
+            for i in range(0, len(annual_file_list)):
+                if i <= len(annual_file_list) - 7:
+                    accumu_daily_array = np.zeros(self.ref_array.shape)
+                    for j in range(i,i+7):
+                        raster_array = self.raster.getRasterArray(annual_file_list[j])
+                        if self.direction == 'below':
+                            daily_array = np.where(raster_array <= base_pcp, 1, 0) 
+                        elif self.direction == 'above':
+                            daily_array = np.where(raster_array >= base_pcp, 1, 0) 
+                        else:
+                            break
+                    
+                        accumu_daily_array = accumu_daily_array + daily_array
+                    
+                    seven_days_pcp_occurrence_array = np.where(accumu_daily_array > self.thres_num_days, 1, 0)
+                    
+                    annual_frequency_array = annual_frequency_array + seven_days_pcp_occurrence_array
+                else:
+                    break
+                
+            annual_frequency_array = np.where(annual_frequency_array > 0, 1, 0)
+            covariate_array = covariate_array + annual_frequency_array 
+            
+        covariate_array = covariate_array / total_years
+        covariate_array = np.where(self.ref_array == self.no_data, self.no_data, covariate_array)
+       
+        return covariate_array
+
+class PCPFreqHarvest(PCPFreqEvery7Days):
+    direction = 'above'
+    thres_num_days = 3
 
 class ExtremeTempFreqPerMonth(ClimaticCovariates):
     
@@ -615,9 +737,10 @@ def getYearList(start_year, end_year):
     return year_list
 
 def generate(cov_id,     
-               year_list, data_dir,  start_date,           end_date, 
-               tmin_key,  tmax_key,  threshold_temp_below, threshold_temp_above,
-               out_dir,   crop_name, layer_name,           ref_rst):
+             year_list, data_dir,  start_date,          end_date, 
+             tmin_key,  tmax_key,  pcp_key,             threshold_temp_below,
+             threshold_temp_above, threshold_pcp_above, threshold_pcp_below,
+             out_dir,   crop_name, layer_name,          ref_rst):
     
     if cov_id in ['FFB','FFH']:
         array = AnnualFrostRiskFrequency(year_list, data_dir).create_array(tmin_key, start_date, end_date, threshold_temp_below)
@@ -639,6 +762,18 @@ def generate(cov_id,
     
     elif cov_id == 'MIA':
         array = AnnualMinDailyTemperatureFrequencyAbove(year_list, data_dir).create_array(tmin_key, start_date, end_date, threshold_temp_above)
+    
+    elif cov_id == 'HAH':
+        array = HeatFreqHarvest(year_list, data_dir).create_array(tmax_key, start_date, end_date, threshold_temp_above)
+        
+    elif cov_id == 'MET':
+        array = MeanTemperature(year_list, data_dir).create_array(tmin_key, tmax_key, start_date, end_date)
+        
+    elif cov_id == 'ANR':
+        array = AnnualPCP(year_list, data_dir).create_array(pcp_key, start_date, end_date)
+        
+    elif cov_id == 'RAH':    
+        array = PCPFreqHarvest(year_list, data_dir).create_array(pcp_key, start_date, end_date, threshold_pcp_above)
 #    elif cov_id == 'HOD': 
 #        array = HotTempFreqPerMonth(year_list, data_dir).create_array(tmax_key, start_date, end_date, threshold_temp_above, out_dir, crop_name, layer_name, ref_rst)
 #    

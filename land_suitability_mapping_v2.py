@@ -350,14 +350,14 @@ class LandSuitability(object):
             print('Warning! No suitability map for {} was created!'.format(crop_id))
 
 
-def get_cova_raster_list(crop, root_dir):
+def get_cova_raster_list(crop, root_dir, covariate_id_list_of_crop):
     
     has_climate = False
     covariate_rasters = []
     for (dirpath, subdirname, filenames) in walk(root_dir):
         if dirpath == root_dir:  # get all the raster under root dir which are share used covariate raster such as slope, ph etc.. 
             for f in filenames:
-                if f.split('.')[-1].lower()[:3] == 'tif':
+                if f.split('.')[-1].lower()[:3] == 'tif' and f.split('.')[0] in covariate_id_list_of_crop:
                     covariate_rasters.append(join(dirpath, f))
                     
         if dirpath.split('\\')[-1] == crop:
@@ -409,9 +409,16 @@ def main():
     
     for crop_id, crop in zip(crops_id, crops):
         
+        covariate_id_list_of_crop = []
         print('Processing {} at {}.'.format(crop, dt.datetime.now()))
         
-        covariate_rasters, has_climate = get_cova_raster_list(crop, covariates_dir)
+        with conn as cur:
+            rows = cur.execute("select distinct covariate_id from suitability_rule where crop_id=?", (crop_id,)).fetchall()
+        
+        for row in rows:
+            covariate_id_list_of_crop.append(row['covariate_id'])
+            
+        covariate_rasters, has_climate = get_cova_raster_list(crop, covariates_dir, covariate_id_list_of_crop)
         
         if len(covariate_rasters) > 0 and has_climate == True:
             landsuit.mapping(crop_id, covariate_rasters, conn, covariates_dir, suit_map_dir)

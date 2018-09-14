@@ -79,8 +79,9 @@ class ConfigParameters(object):
         end_year = int(self.config.get(cli_header,'end_year'))
         key_min = self.config.get(cli_header,'key_min_temperature')
         key_max = self.config.get(cli_header,'key_max_temperature')
+        key_pcp = self.config.get(cli_header,'key_pcp')
         
-        return climate_dir, start_year, end_year, key_min, key_max
+        return climate_dir, start_year, end_year, key_min, key_max, key_pcp
     
         
     def GetPreprocessingParams(self, proj_header, prep_header):
